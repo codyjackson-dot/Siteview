@@ -1244,11 +1244,16 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
   .pr-tbl tr{break-inside:avoid}
   @page{margin:14mm}
 }
+.rgroup{border:1px solid var(--rule-2);border-radius:6px;padding:8px 10px 10px;margin:12px 0;background:var(--panel-2)}
+.rg-title{margin:0 0 6px;font-family:var(--cond);font-size:14px}
+.rg-item{background:var(--panel);border:1px solid var(--rule-2);border-radius:4px;padding:8px 10px;margin:8px 0}
+.rg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;font-family:var(--cond)}
+.rg-n{display:inline-block;min-width:18px;text-align:center;background:var(--teal);color:#fff;border-radius:9px;font-size:11px;padding:1px 5px;margin-left:4px}
 .sign-lines{max-height:40vh;overflow:auto;border:1px solid var(--rule-2);border-radius:4px;padding:0 8px 6px;margin-bottom:10px;background:#fff}
 .sign-lines h3{font-size:12px;margin:8px 0 4px;font-family:var(--cond);color:var(--ink-2)}
 .sign-lines .pr-tbl{font-size:11.5px}.sign-lines .pr-tbl th{width:auto;padding:4px 6px 4px 0}.sign-lines .pr-tbl td{padding:4px 6px 4px 0}
-@media (max-width:640px){.brand span{display:none}.brand-logo{height:22px}.brand b{font-size:17px}}
 .sf-links{display:inline-flex;gap:12px;margin-top:4px}.sf-links a{font-size:11.5px;color:var(--teal);text-decoration:none;font-weight:600}
+@media (max-width:640px){.brand span{display:none}.brand-logo{height:22px}.brand b{font-size:17px}}
 </style>
 </head>
 <body>
@@ -1416,7 +1421,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-05a';
+const BUILD = '2026-11-05b';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -1468,7 +1473,8 @@ const FIELD_TYPES  = [
   { id:'select', name:'Dropdown' }, { id:'checks', name:'Checkboxes' },
   { id:'yesno', name:'Yes / No / N/A' }, { id:'photo', name:'Photo' },
   { id:'file', name:'File attachment' },
-  { id:'sign', name:'Signature' },  { id:'header', name:'Section heading' }
+  { id:'sign', name:'Signature' },  { id:'header', name:'Section heading' },
+  { id:'rstart', name:'Repeating section — start' }, { id:'rend', name:'Repeating section — end' }
 ];
 
 /* ---------------- tiny helpers ---------------- */
@@ -4214,27 +4220,53 @@ function fillForm(templateId, formId) {
     ${scopes.length ? `<div class="fld"><label>Attach to scope</label><select name="__scope">
       <option value="">Site level</option>${scopes.map(x => `<option value="${x.id}"${inst && inst.scopeId === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}
     </select></div><hr class="rule">` : ''}
-    ${t.fields.map(f => fieldHtml(f, data[f.id], ro)).join('')}`;
+    ${formLayout(t.fields).map(it => it.group ? groupHtml(it, data[it.group.id], ro) : fieldHtml(it, data[it.id], ro)).join('')}`;
 
   const printBtn = inst ? [{ label:'Print', cls:'btn', fn: () => { closeModal(); printForm(inst.id); } }] : [];
   openModal(t.name, body, ro ? printBtn.concat([{ label:'Close', cls:'btn', fn: closeModal }]) : printBtn.concat([
     { label:'Cancel', cls:'btn', fn: closeModal },
     { label: inst ? 'Save form' : 'Submit form', cls:'btn pri', fn: async () => {
       const out = {}; let missing = null;
-      t.fields.forEach(f => {
-        if (f.type === 'header') return;
-        const v = readField(f);
-        out[f.id] = v;
-        if (f.req && (v === '' || v == null || (Array.isArray(v) && !v.length))) missing = missing || f.label;
+      const empty = v => v === '' || v == null || (Array.isArray(v) && !v.length);
+      formLayout(t.fields).forEach(it => {
+        if (it.group) {
+          const rows = [];
+          $$('.rgroup[data-group="' + it.group.id + '"] .rg-item', $('#mBody')).forEach(el => {
+            const r = {};
+            it.fields.forEach(f => {
+              if (f.type === 'header') return;
+              const v = readField(rowField(f, it.group.id, el.dataset.row));
+              r[f.id] = v;
+              if (f.req && empty(v)) missing = missing || (groupWord(it) + ' ' + (rows.length + 1) + ': ' + f.label);
+            });
+            rows.push(r);
+          });
+          out[it.group.id] = rows;
+          return;
+        }
+        if (it.type === 'header') return;
+        const v = readField(it);
+        out[it.id] = v;
+        if (it.req && empty(v)) missing = missing || it.label;
       });
       if (missing) return toast('Required: ' + missing, true);
 
       // Photos and signatures go to Storage, not into the record.
       const formId = inst ? inst.id : uid('fm');
-      for (const f of t.fields) {
-        if (f.type !== 'photo' && f.type !== 'sign') continue;
-        if (isDataUrl(out[f.id])) {
-          out[f.id] = await storeImage(out[f.id], 'formimg_' + formId + '_' + f.id);
+      for (const it of formLayout(t.fields)) {
+        if (it.group) {
+          for (let i = 0; i < out[it.group.id].length; i++) {
+            for (const f of it.fields) {
+              if (f.type !== 'photo' && f.type !== 'sign') continue;
+              const v = out[it.group.id][i][f.id];
+              if (isDataUrl(v)) out[it.group.id][i][f.id] = await storeImage(v, 'formimg_' + formId + '_' + it.group.id + '_' + i + '_' + f.id);
+            }
+          }
+          continue;
+        }
+        if (it.type !== 'photo' && it.type !== 'sign') continue;
+        if (isDataUrl(out[it.id])) {
+          out[it.id] = await storeImage(out[it.id], 'formimg_' + formId + '_' + it.id);
         }
       }
       const scopeId = $('[name=__scope]', $('#mBody')) ? $('[name=__scope]', $('#mBody')).value || null : null;
@@ -4250,12 +4282,71 @@ function fillForm(templateId, formId) {
       closeModal(); renderSheet(); refreshAll(); toast('Form saved to site file');
     }}]));
 
-  $$('#mBody [data-photo]').forEach(btn => btn.onclick = () => pickPhoto(btn.dataset.photo));
-  $$('#mBody [data-file]').forEach(btn => btn.onclick = () => pickFormFile(btn.dataset.file));
-  $$('#mBody [data-openff]').forEach(btn => btn.onclick = () => openFormFile(btn.dataset.openff));
-  $$('#mBody canvas[data-sign]').forEach(async cv =>
-    initSignature(cv, await imageSrc(data[cv.dataset.sign])));
+  wireFormInputs($('#mBody'), data);
+  const layout = formLayout(t.fields);
+  $$('#mBody [data-addrow]').forEach(btn => btn.onclick = () => {
+    const grp = btn.closest('.rgroup');
+    const g = layout.find(x => x.group && x.group.id === btn.dataset.addrow);
+    const n = +grp.dataset.next; grp.dataset.next = n + 1;
+    const holder = document.createElement('div');
+    holder.innerHTML = groupRowHtml(g, n, {}, false);
+    const row = holder.firstElementChild;
+    $('.rg-items', grp).appendChild(row);
+    $$('.rg-item', grp).forEach((el, i) => { const nn = $('.rg-n', el); if (nn) nn.textContent = i + 1; });
+    wireFormInputs(row, {});
+    row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
   resolveImages($('#mBody'));
+}
+
+/* A template is a flat list, but fields between a "Repeating section — start"
+   and the matching "— end" belong to that section: on the filled form the
+   section can be added as many times as needed (one block per hazard, per
+   sample, per worker). Answers for a section are stored as an array of
+   objects keyed by field id. */
+function formLayout(fields) {
+  const out = [];
+  let g = null;
+  (fields || []).forEach(f => {
+    if (f.type === 'rstart') { g = { group: f, fields: [] }; out.push(g); return; }
+    if (f.type === 'rend') { g = null; return; }
+    if (g) g.fields.push(f); else out.push(f);
+  });
+  return out;
+}
+const rowField = (f, gid, n) => Object.assign({}, f, { id: gid + '__' + n + '__' + f.id });
+const groupWord = g => (g.group.label || 'Item').replace(/s$/i, '');
+
+function groupRowHtml(g, n, vals, ro) {
+  return `<div class="rg-item" data-row="${n}">
+    <div class="rg-head"><b>${esc(groupWord(g))} <span class="rg-n">${n + 1}</span></b>
+      ${ro ? '' : `<button class="btn sm dgr" type="button" data-rowdel="1">Remove</button>`}</div>
+    ${g.fields.map(f => fieldHtml(rowField(f, g.group.id, n), (vals || {})[f.id], ro)).join('')}
+  </div>`;
+}
+function groupHtml(g, rows, ro) {
+  const list = Array.isArray(rows) && rows.length ? rows : [{}];
+  return `<div class="rgroup" data-group="${g.group.id}" data-next="${list.length}">
+    <h4 class="rg-title">${esc(g.group.label)}</h4>
+    <div class="rg-items">${list.map((r, i) => groupRowHtml(g, i, r, ro)).join('')}</div>
+    ${ro ? '' : `<button class="btn sm" type="button" data-addrow="${g.group.id}">+ Add another ${esc(groupWord(g).toLowerCase())}</button>`}
+  </div>`;
+}
+/* wire the buttons inside a form body (or one newly added row) */
+function wireFormInputs(root, data) {
+  $$('[data-photo]', root).forEach(btn => btn.onclick = () => pickPhoto(btn.dataset.photo));
+  $$('[data-file]', root).forEach(btn => btn.onclick = () => pickFormFile(btn.dataset.file));
+  $$('[data-openff]', root).forEach(btn => btn.onclick = () => openFormFile(btn.dataset.openff));
+  $$('canvas[data-sign]', root).forEach(async cv => {
+    const hidden = $('[name="' + cv.dataset.sign + '"]', root.closest('#mBody') || root);
+    initSignature(cv, await imageSrc(hidden ? hidden.value : ''));
+  });
+  $$('[data-rowdel]', root).forEach(btn => btn.onclick = () => {
+    const item = btn.closest('.rg-item'), grp = btn.closest('.rgroup');
+    item.remove();
+    $$('.rg-item', grp).forEach((el, i) => { const nn = $('.rg-n', el); if (nn) nn.textContent = i + 1; });
+    if (!$$('.rg-item', grp).length) $('[data-addrow]', grp).click();
+  });
 }
 
 function fieldHtml(f, v, ro) {
@@ -4912,7 +5003,13 @@ function formPrintHtml(id) {
   const sub = `<div><span>Scope</span>${esc(sc ? sc.name : 'Site level')}</div>
                <div><span>Completed by</span>${esc(f.by)}</div>
                <div><span>Submitted</span>${esc(fmtTs(f.at))}</div>`;
-  const rows = t.fields.map(fd => {
+  const rows = formLayout(t.fields).map(fd => {
+    if (fd.group) {
+      const list = Array.isArray(f.data[fd.group.id]) ? f.data[fd.group.id] : [];
+      if (!list.length) return `<tr class="pr-sec"><td colspan="2">${esc(fd.group.label)}</td></tr><tr><th>—</th><td><i>none recorded</i></td></tr>`;
+      return list.map((r, i) => `<tr class="pr-sec"><td colspan="2">${esc(groupWord(fd))} ${i + 1}${list.length > 1 ? ' of ' + list.length : ''}</td></tr>`
+        + fd.fields.filter(x => x.type !== 'header').map(x => `<tr><th>${esc(x.label)}</th><td>${formValueHtml(x, r[x.id])}</td></tr>`).join('')).join('');
+    }
     if (fd.type === 'header') return `<tr class="pr-sec"><td colspan="2">${esc(fd.label)}</td></tr>`;
     return `<tr><th>${esc(fd.label)}</th><td>${formValueHtml(fd, f.data[fd.id])}</td></tr>`;
   }).join('');
@@ -5246,7 +5343,7 @@ function drawEditor() {
     <div id="fieldList">${draft.fields.map((f, i) => `
       <div class="file-row" style="gap:8px">
         <span class="file-ic">${i + 1}</span>
-        <span class="file-nm"><b>${esc(f.label) || '<untitled>'}</b>
+        <span class="file-nm"><b>${f.type === 'rend' ? '<i>— end of repeating section</i>' : f.type === 'rstart' ? '&#8635; ' + esc(f.label) : esc(f.label) || '<untitled>'}</b>
           <span>${esc((FIELD_TYPES.find(x => x.id === f.type) || {}).name || f.type)}${f.req ? ' · required' : ''}${f.opts && f.opts.length ? ' · ' + f.opts.length + ' options' : ''}</span></span>
         <button class="icon-btn" data-fup="${i}" title="Move up"><svg viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
         <button class="icon-btn" data-fdn="${i}" title="Move down"><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button>
@@ -5281,10 +5378,11 @@ function fieldEditor(idx) {
     <div class="fld"><label>Label <span class="req">*</span></label><input type="text" name="flabel" value="${esc(f.label)}"></div>
     <div class="fld"><label>Field type</label><select name="ftype">${selOpts(FIELD_TYPES, f.type)}</select></div>
     <div class="fld"><label>Options, one per line</label><textarea name="fopts" placeholder="Only used by dropdown and checkbox fields">${esc((f.opts || []).join('\n'))}</textarea></div>
-    <label class="chk"><input type="checkbox" name="freq" ${f.req ? 'checked' : ''}><span>Required before the form can be submitted</span></label>`,
+    <label class="chk"><input type="checkbox" name="freq" ${f.req ? 'checked' : ''}><span>Required before the form can be submitted</span></label>
+    <div class="note" style="margin-top:8px">A <b>repeating section</b> lets the person filling the form add the same block as many times as needed — one per hazard, per sample, per worker. Put a "— start" field above the block (its label names the item, e.g. <i>Hazard</i>) and a "— end" field below it.</div>`,
     [{ label:'Cancel', cls:'btn', fn: () => drawEditor() },
      { label:'Save field', cls:'btn pri', fn: () => {
-        const label = mv('flabel');
+        const label = mv('ftype') === 'rend' ? 'end' : mv('flabel');
         if (!label) return toast('The field needs a label', true);
         const o = { id: f.id, type: mv('ftype'), label,
           req: $('[name=freq]', $('#mBody')).checked,
@@ -5899,8 +5997,6 @@ const Cloud = {
         }
       }
 
-      // The workspace record itself: only a provider may write it, and a
-      // refusal here must never be reported as if the real records failed.
       const t = curTenant();
       if (t && isProvider()) {
         const key = JSON.stringify(t);
