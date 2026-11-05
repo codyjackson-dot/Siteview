@@ -1244,6 +1244,11 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
   .pr-tbl tr{break-inside:avoid}
   @page{margin:14mm}
 }
+.sign-lines{max-height:40vh;overflow:auto;border:1px solid var(--rule-2);border-radius:4px;padding:0 8px 6px;margin-bottom:10px;background:#fff}
+.sign-lines h3{font-size:12px;margin:8px 0 4px;font-family:var(--cond);color:var(--ink-2)}
+.sign-lines .pr-tbl{font-size:11.5px}.sign-lines .pr-tbl th{width:auto;padding:4px 6px 4px 0}.sign-lines .pr-tbl td{padding:4px 6px 4px 0}
+@media (max-width:640px){.brand span{display:none}.brand-logo{height:22px}.brand b{font-size:17px}}
+.sf-links{display:inline-flex;gap:12px;margin-top:4px}.sf-links a{font-size:11.5px;color:var(--teal);text-decoration:none;font-weight:600}
 </style>
 </head>
 <body>
@@ -3315,6 +3320,34 @@ function saveLem(newStatus) {
 }
 
 /* ---------------- signing ---------------- */
+/* the line items on a ticket, shared by the print sheet and the signature screen */
+function lemLinesHtml(t) {
+  const lab = (t.labour || []).length ? `<h3>Labour</h3><table class="pr-tbl lem-lines">
+      <thead><tr><th>Name</th><th>Class</th><th>ST</th><th>OT</th><th>Rate</th><th class="r">Amount</th></tr></thead>
+      <tbody>${t.labour.map(l => `<tr><td>${esc(l.name)}</td><td>${esc(l.cls)}</td>
+        <td>${esc(l.st)}</td><td>${esc(l.ot)}</td><td>${money2(l.rate)}</td>
+        <td class="r">${money2(num(l.st) * num(l.rate) + num(l.ot) * (num(l.otRate) || num(l.rate) * 1.5) + num(l.sub) + num(l.travel))}</td></tr>`).join('')}
+      </tbody></table>` : '';
+  const eq = (t.equip || []).length ? `<h3>Equipment</h3><table class="pr-tbl lem-lines">
+      <thead><tr><th>Unit</th><th>Description</th><th>Qty</th><th>Per</th><th>Rate</th><th class="r">Amount</th></tr></thead>
+      <tbody>${t.equip.map(e => `<tr><td>${esc(e.unit)}</td><td>${esc(e.desc)}</td>
+        <td>${esc(e.qty)}</td><td>${esc(e.uom)}</td><td>${money2(e.rate)}</td>
+        <td class="r">${money2(num(e.qty) * num(e.rate) + num(e.standby) * num(e.standbyRate))}</td></tr>`).join('')}
+      </tbody></table>` : '';
+  const mat = (t.material || []).length ? `<h3>Material</h3><table class="pr-tbl lem-lines">
+      <thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Price</th><th class="r">Amount</th></tr></thead>
+      <tbody>${t.material.map(m => `<tr><td>${esc(m.desc)}</td><td>${esc(m.qty)}</td>
+        <td>${esc(m.uom)}</td><td>${money2(m.price)}</td>
+        <td class="r">${money2(num(m.qty) * num(m.price))}</td></tr>`).join('')}
+      </tbody></table>` : '';
+  const th = (t.third || []).length ? `<h3>Third party</h3><table class="pr-tbl lem-lines">
+      <thead><tr><th>Vendor</th><th>Description</th><th>Billing</th><th class="r">Amount</th></tr></thead>
+      <tbody>${t.third.map(x => `<tr><td>${esc(x.vendor)}</td><td>${esc(x.desc)}</td>
+        <td>${x.direct ? 'Direct to client' : 'Rebilled'}</td>
+        <td class="r">${money2(x.amount)}</td></tr>`).join('')}</tbody></table>` : '';
+  return lab + eq + mat + th;
+}
+
 function signDialog(id) {
   const t = S.lems.find(x => x.id === id);
   if (!t) return;
@@ -3325,6 +3358,7 @@ function signDialog(id) {
   openModal('Sign field ticket ' + t.number, `
     <p class="note">By signing you confirm the labour, equipment and material below were supplied as
     described at ${esc(site ? site.name : 'this site')} on ${fmtDate(t.date)}.</p>
+    <div class="sign-lines">${lemLinesHtml(t)}</div>
     <table class="lem-tot"><tbody>
       <tr><td>Work</td><td class="r">${esc(t.workDesc.slice(0, 120))}</td></tr>
       <tr><td>Labour</td><td class="r mono-sm">${money2(tot.labour)}</td></tr>
@@ -3785,7 +3819,8 @@ function renderSheet() {
   $('#sfName').textContent = s.name;
   $('#sfSub').innerHTML = `<span class="phase-tag" style="background:var(${p.c})">${p.short}</span>
     &nbsp;${esc(clientName(s.clientId))} · ${esc(s.status)}
-    ${s.uwi && s.uwi !== '—' ? '<br><span class="num">' + esc(s.uwi) + '</span>' : '<br><span class="num">' + esc(s.lsd) + '</span>'}`;
+    ${s.uwi && s.uwi !== '—' ? '<br><span class="num">' + esc(s.uwi) + '</span>' : '<br><span class="num">' + esc(s.lsd) + '</span>'}
+    <br><span class="sf-links"><a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat.toFixed(6)},${s.lng.toFixed(6)}&travelmode=driving" target="_blank" rel="noopener">Directions</a></span>`;
 
   const counts = {
     scopes: siteScopes(s.id).length, cost: siteCosts(s.id).length,
