@@ -1423,7 +1423,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-05d';
+const BUILD = '2026-11-05e';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -5958,6 +5958,8 @@ const FIREBASE_CONFIG = {
 /* collections mirrored to /tenants/{tid}/<name> */
 const SYNC = ['sites','scopes','afes','costs','forms','templates','folders','docs','log','tasks','clients','layers','audit','lems','invoices','rates'];
 const CAPPED = { log: 400, audit: 300 };   // only the most recent are listened to
+/* the server keeps these append-only: new entries go up, nothing is rewritten or removed */
+const APPEND_ONLY = { log: 1, audit: 1 };
 
 const Cloud = {
   on: false, ready: false, lastFailure: null, app: null, auth: null, db: null, st: null,
@@ -6095,6 +6097,7 @@ const Cloud = {
 
         for (const id in now) {
           if (was[id] !== now[id]) {
+            if (APPEND_ONLY[name] && was[id] !== undefined) continue;   // history is never rewritten
             const rec = rows.find(r => r.id === id);
             const payload = toCloud(rec);
             // Firestore refuses anything over 1 MiB. Photos and signatures
@@ -6109,7 +6112,7 @@ const Cloud = {
             writes.push({ id, payload });
           }
         }
-        for (const id in was) if (!(id in now)) drops.push(id);
+        for (const id in was) if (!(id in now) && !APPEND_ONLY[name]) drops.push(id);
         if (!writes.length && !drops.length) continue;
 
         try {
