@@ -1,0 +1,208 @@
+rules_version = '2';
+
+// SiteView cloud — rules for the invite-based build.
+//
+// Authorisation is read from /users/{uid}: that document holds the person's
+// tenant, role and active flag. The one thing that has to be airtight is the
+// creation of that document, because the browser writes it during sign-up.
+// A user record is only accepted when its tenant, role and unit match an
+// invitation that exists and has not expired. Everything else follows from it.
+//
+// Cost note: these rules call get() on the caller's user record, and on the
+// tenant for licence state. Firestore bills those as document reads and caches
+// identical gets within one evaluation, so a write costs about two extra
+// reads. At a few thousand operations a day that is pennies.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- who is asking ----------
+    function signedIn()   { return request.auth != null; }
+    function profPath()   { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function hasProfile() { return signedIn() && exists(profPath()); }
+    function prof()       { return get(profPath()).data; }
+    function activeUser() { return hasProfile() && prof().active == true; }
+    function myTid()      { return prof().tid; }
+    function myRole()     { return prof().role; }
+
+    function isProvider() { return activeUser() && myRole() == 'Provider admin'; }
+
+    // A provider can reach any workspace. The app writes an audit entry when
+    // it opens one; these rules do not require it.
+    function inTenant(t)  { return activeUser() && (myTid() == t || isProvider()); }
+
+    function editRole()   { return myRole() in ['Provider admin', 'Admin', 'Project manager']; }
+    // A field lead raises tickets and forms from the field; the office prices them.
+    function fieldRole()  { return editRole() || myRole() == 'Field lead'; }
+    function isFieldLead(){ return myRole() == 'Field lead'; }
+    function canField(t)  { return inTenant(t) && fieldRole() && licenceOk(t); }
+    function adminRole()  { return myRole() in ['Provider admin', 'Admin']; }
+
+    // ---------- licence state ----------
+    function pad(n)       { return n < 10 ? '0' + string(n) : string(n); }
+    function todayStr()   { return string(request.time.year()) + '-'
+                                 + pad(request.time.month()) + '-'
+                                 + pad(request.time.day()); }
+    function tenantDoc(t) { return get(/databases/$(database)/documents/tenants/$(t)).data; }
+    function notExpired(x) { return x == null || x == '' || x >= todayStr(); }
+    function licenceOk(t) {
+      return tenantDoc(t).status != 'Suspended' && notExpired(tenantDoc(t).expires);
+    }
+
+    function canEdit(t)  { return inTenant(t) && editRole()  && licenceOk(t); }
+    function canAdmin(t) { return inTenant(t) && adminRole() && licenceOk(t); }
+
+    // A person pinned to one business unit sees only that unit's sites.
+    // Pinned clients must add the matching where() clause to list queries.
+    function unitOk(unitId) {
+      return prof().unit == null || prof().unit == '' || prof().unit == unitId;
+    }
+
+    function unchanged(f) { return request.resource.data[f] == resource.data[f]; }
+
+    // A missing tenant or unit arrives as null from the app and as '' from a
+    // hand-made console document. Treat the two as the same absence.
+    function blank(v)        { return v == null || v == ''; }
+    function sameOrBlank(a, b) { return a == b || (blank(a) && blank(b)); }
+
+    // ---------- invitations ----------
+    // A code is readable by anyone signed in, because sign-up reads it before
+    // the user record exists. The code itself is the secret.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if isProvider() || (activeUser() && adminRole());
+
+      // An administrator can only invite into their own workspace, and only a
+      // provider can mint another provider.
+      allow create: if activeUser() && adminRole()
+                    && (isProvider() || request.resource.data.tid == myTid())
+                    && (request.resource.data.role != 'Provider admin' || isProvider())
+                    && request.resource.data.role in ['Provider admin', 'Admin', 'Project manager', 'Field lead', 'Viewer'];
+
+      allow update: if false;
+
+      // Consumed by the person who just used it, or cleaned up by an admin.
+      allow delete: if (hasProfile() && prof().invite == code)
+                    || (activeUser() && adminRole()
+                        && (isProvider() || resource.data.tid == myTid()));
+    }
+
+    // ---------- user records: the gate ----------
+    match /users/{uid} {
+      allow read: if signedIn() && (uid == request.auth.uid || inTenant(resource.data.tid));
+
+      // Sign-up. The record must match a live invitation exactly, so nobody
+      // can write themselves a role or a tenant they were not given.
+      allow create: if signedIn()
+                    && uid == request.auth.uid
+                    && request.resource.data.invite is string
+                    && exists(/databases/$(database)/documents/invites/$(request.resource.data.invite))
+                    && request.resource.data.active == true
+                    && sameOrBlank(request.resource.data.tid,
+                         get(/databases/$(database)/documents/invites/$(request.resource.data.invite)).data.tid)
+                    && request.resource.data.role ==
+                         get(/databases/$(database)/documents/invites/$(request.resource.data.invite)).data.role
+                    && sameOrBlank(request.resource.data.unit,
+                         get(/databases/$(database)/documents/invites/$(request.resource.data.invite)).data.unit)
+                    && notExpired(get(/databases/$(database)/documents/invites/$(request.resource.data.invite)).data.expires);
+
+      allow update: if
+        // your own record: display details only, never your own standing
+        (uid == request.auth.uid
+          && unchanged('tid') && unchanged('role') && unchanged('unit')
+          && unchanged('active') && unchanged('invite'))
+        // an administrator managing their own workspace's people
+        || (activeUser() && adminRole() && inTenant(resource.data.tid)
+            && unchanged('tid') && unchanged('invite')
+            && (request.resource.data.role != 'Provider admin' || isProvider()));
+
+      allow delete: if activeUser() && adminRole()
+                    && uid != request.auth.uid
+                    && inTenant(resource.data.tid);
+    }
+
+    // ---------- the tenant record ----------
+    match /tenants/{t} {
+      allow get:  if inTenant(t);
+      allow list: if isProvider();
+      // Licence terms belong to the provider alone. An administrator cannot
+      // widen their own seat count or push out their own expiry date.
+      allow create, update, delete: if isProvider();
+
+      // ---------- sites ----------
+      match /sites/{id} {
+        allow read:   if inTenant(t) && unitOk(resource.data.clientId);
+        allow create: if canEdit(t);
+        allow update: if canEdit(t) && unitOk(resource.data.clientId);
+        allow delete: if canEdit(t);
+      }
+
+      // ---------- project records ----------
+      match /scopes/{id}    { allow read: if inTenant(t); allow write: if canEdit(t); }
+      match /afes/{id}      { allow read: if inTenant(t); allow write: if canEdit(t); }
+      match /costs/{id}     { allow read: if inTenant(t); allow write: if canEdit(t); }
+      match /forms/{id}     { allow read: if inTenant(t); allow write: if canField(t); }
+      match /templates/{id} { allow read: if inTenant(t); allow write: if canAdmin(t); }
+      match /clients/{id}   { allow read: if inTenant(t); allow write: if canAdmin(t); }
+
+      // ---------- documents, folders and map layers: administrators only ----------
+      match /docs/{id}    { allow read: if inTenant(t); allow write: if canAdmin(t); }
+      match /folders/{id} { allow read: if inTenant(t); allow write: if canAdmin(t); }
+      match /layers/{id}  { allow read: if inTenant(t); allow write: if canAdmin(t); }
+
+      // ---------- field operations ----------
+      // Tickets are raised by project staff. A ticket that has been submitted
+      // can be signed by anyone in the workspace — that is the client rep
+      // accepting the work — but only staff can change what it says.
+      match /lems/{id} {
+        allow read:   if inTenant(t);
+        // a field lead's ticket is hours and quantities only, and stops at "Field complete"
+        allow create: if canEdit(t)
+                      || (canField(t) && request.resource.data.status in ['Draft', 'Field complete']);
+        allow delete: if canEdit(t);
+        allow update: if canEdit(t)
+                      || (canField(t) && isFieldLead()
+                          && resource.data.status in ['Draft', 'Field complete', 'Rejected']
+                          && request.resource.data.status in ['Draft', 'Field complete'])
+                      || (inTenant(t) && licenceOk(t)
+                          && resource.data.status == 'Submitted'
+                          && request.resource.data.status in ['Signed', 'Rejected']
+                          && unchanged('number') && unchanged('siteId')
+                          && unchanged('labour') && unchanged('equip')
+                          && unchanged('material') && unchanged('third'));
+      }
+      match /invoices/{id} { allow read: if inTenant(t); allow write: if canEdit(t); }
+      match /rates/{id}    { allow read: if inTenant(t); allow write: if canAdmin(t); }
+
+      // ---------- tasks ----------
+      // Whoever a task is assigned to may move it along, including a viewer.
+      // Reassigning it, or changing what it is, needs edit rights.
+      match /tasks/{id} {
+        allow read:   if inTenant(t);
+        allow create: if canField(t);
+        allow delete: if canEdit(t);
+        allow update: if canEdit(t)
+                      || (inTenant(t) && licenceOk(t)
+                          && resource.data.assignee == request.auth.uid
+                          && unchanged('assignee') && unchanged('title')
+                          && unchanged('siteId')   && unchanged('due')
+                          && unchanged('priority'));
+      }
+
+      // ---------- history is append-only ----------
+      match /log/{id} {
+        allow read:   if inTenant(t);
+        allow create: if inTenant(t) && licenceOk(t);
+        allow update, delete: if false;
+      }
+      match /audit/{id} {
+        allow read:   if inTenant(t) && adminRole();
+        allow create: if inTenant(t);
+        allow update, delete: if false;
+      }
+    }
+
+    // Anything not matched above is denied.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

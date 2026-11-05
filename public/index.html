@@ -1423,7 +1423,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-05e';
+const BUILD = '2026-11-05f';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -2920,8 +2920,8 @@ function tabTasks(s) {
    are what invoices are built from, so the money only ever gets entered once.
    ========================================================================== */
 
-const LEM_STATUS = ['Draft', 'Submitted', 'Signed', 'Approved', 'Invoiced', 'Rejected'];
-const LEM_TONE = { Draft:'', Submitted:'warnp', Signed:'info', Approved:'ok', Invoiced:'ok', Rejected:'badp' };
+const LEM_STATUS = ['Draft', 'Field complete', 'Submitted', 'Signed', 'Approved', 'Invoiced', 'Rejected'];
+const LEM_TONE = { Draft:'', 'Field complete':'warnp', Submitted:'warnp', Signed:'info', Approved:'ok', Invoiced:'ok', Rejected:'badp' };
 const INV_STATUS = ['Draft', 'Sent', 'Paid', 'Overdue', 'Void'];
 const INV_TONE = { Draft:'', Sent:'info', Paid:'ok', Overdue:'badp', Void:'' };
 const EQ_UNITS = ['hr', 'day', 'km', 'load'];
@@ -3017,6 +3017,7 @@ function unpostLemCost(t) {
    The pane
    ========================================================================== */
 function fieldTabs() {
+  if (isFieldLead()) return [{ id:'tickets', label:'Field tickets' }, { id:'share', label:'Client share' }];
   return canEdit()
     ? [{ id:'tickets', label:'Field tickets' }, { id:'invoices', label:'Invoicing' },
        { id:'rates', label:'Rate book' }, { id:'share', label:'Client share' }]
@@ -3070,9 +3071,9 @@ function lemRow(t, showSite) {
       ${t.workDesc ? '<br><span class="note">' + esc(t.workDesc.slice(0, 90)) + '</span>' : ''}</td>
     <td><span class="pill ${LEM_TONE[t.status]}">${t.status}</span>
       ${t.signedBy ? '<br><span class="note">signed ' + esc(t.signedBy) + '</span>' : ''}</td>
-    <td class="r mono-sm">${money2(tot.subtotal)}</td>
+    <td class="r mono-sm">${unitsOnly() ? '—' : money2(tot.subtotal)}</td>
     <td class="r"><div class="row-actions">
-      ${t.status === 'Submitted' ? `<button class="btn sm pri" data-lemsign="${t.id}">Sign</button>` : ''}
+      ${t.status === 'Submitted' && !unitsOnly() ? `<button class="btn sm pri" data-lemsign="${t.id}">Sign</button>` : ''}
       <button class="btn sm" data-lem="${t.id}">Open</button>
       <button class="btn sm" data-lemprint="${t.id}">Print</button>
     </div></td></tr>`;
@@ -3085,11 +3086,13 @@ function fieldTickets() {
   list.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.at || 0) - (a.at || 0));
 
   const open = tLems().filter(t => t.status === 'Submitted').length;
+  const needRates = tLems().filter(t => t.status === 'Field complete').length;
   const unbilled = tLems().filter(t => t.status === 'Approved');
   const unbilledVal = unbilled.reduce((s, t) => s + lemTotals(t).subtotal, 0);
   const thisMonth = tLems().filter(t => (t.date || '').slice(0, 7) === today().slice(0, 7));
 
   return `<div class="kpis">
+      ${unitsOnly() ? '' : `<div class="kpi"><div class="k">From the field, need rates</div><div class="v ${needRates ? 'bad' : ''}">${needRates}</div></div>`}
       <div class="kpi"><div class="k">Awaiting signature</div><div class="v ${open ? 'bad' : ''}">${open}</div></div>
       <div class="kpi"><div class="k">Approved, not invoiced</div><div class="v">${unbilled.length}</div>
         <div class="d">${kmoney(unbilledVal)}</div></div>
@@ -3104,7 +3107,7 @@ function fieldTickets() {
       <select id="lemSiteF" class="mini"><option value="">All sites</option>
         ${visibleSites().map(s => `<option value="${s.id}"${UI.lemSite === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
       <span class="spacer"></span>
-      ${canEdit() ? '<button class="btn sm pri" data-lemnew="">New field ticket</button>' : ''}</div>
+      ${canTicket() ? '<button class="btn sm pri" data-lemnew="">New field ticket</button>' : ''}</div>
       <div class="card-b flush">${list.length ? `<div class="tbl-scroll"><table><tbody>
         ${list.map(t => lemRow(t, true)).join('')}</tbody></table></div>`
         : '<div class="empty"><b>No tickets</b>Raise one against a site and the crew that did the work.</div>'}
@@ -3128,7 +3131,7 @@ function _draft() { return lemDraft; }   // debug handle
 
 function lemDialog(id, presetSite) {
   const existing = id ? S.lems.find(x => x.id === id) : null;
-  if (!existing && !canEdit()) return toast('Only project staff can raise tickets', true);
+  if (!existing && !canTicket()) return toast('Only project staff can raise tickets', true);
   lemDraft = existing ? JSON.parse(JSON.stringify(existing)) : {
     id: uid('lem'), tenantId: UI.tenant, number: nextNumber('LEM', tLems()),
     siteId: presetSite || '', scopeId: '', afeId: '', clientId: '',
@@ -3141,6 +3144,7 @@ function lemDialog(id, presetSite) {
 }
 
 function lemLocked() {
+  if (isFieldLead()) return ['Draft', 'Field complete', 'Rejected'].indexOf(lemDraft.status) === -1;
   return ['Approved', 'Invoiced'].indexOf(lemDraft.status) > -1 || !canEdit();
 }
 
@@ -3153,15 +3157,16 @@ function drawLem() {
   const rb = ratesFor(t.clientId || (site ? site.clientId : ''));
   const tot = lemTotals(t);
   const d = ro ? ' disabled' : '';
+  const uo = unitsOnly();
 
   const labourRows = (t.labour || []).map((l, i) => `<tr>
     <td><input type="text" data-l="${i}.name" value="${esc(l.name)}" placeholder="Name"${d}></td>
     <td><input type="text" data-l="${i}.cls" value="${esc(l.cls)}" placeholder="Class" list="lbClasses"${d}></td>
     <td><input type="number" step="0.5" data-l="${i}.st" value="${esc(l.st)}"${d}></td>
     <td><input type="number" step="0.5" data-l="${i}.ot" value="${esc(l.ot)}"${d}></td>
-    <td><input type="number" step="0.01" data-l="${i}.rate" value="${esc(l.rate)}"${d}></td>
+    ${uo ? `<input type="hidden" data-l="${i}.rate" value="${esc(l.rate)}">` : `<td><input type="number" step="0.01" data-l="${i}.rate" value="${esc(l.rate)}"${d}></td>`}
     <td><input type="number" step="1" data-l="${i}.sub" value="${esc(l.sub)}" title="Subsistence"${d}></td>
-    <td class="r mono-sm">${money2(num(l.st) * num(l.rate) + num(l.ot) * (num(l.otRate) || num(l.rate) * 1.5) + num(l.sub) + num(l.travel))}</td>
+    ${uo ? '' : `<td class="r mono-sm">${money2(num(l.st) * num(l.rate) + num(l.ot) * (num(l.otRate) || num(l.rate) * 1.5) + num(l.sub) + num(l.travel))}</td>`}
     <td>${ro ? '' : `<button class="btn sm dgr" data-rm="labour.${i}">×</button>`}</td></tr>`).join('');
 
   const equipRows = (t.equip || []).map((e, i) => `<tr>
@@ -3169,17 +3174,17 @@ function drawLem() {
     <td><input type="text" data-l="${i}.desc" value="${esc(e.desc)}" placeholder="Description" list="eqList"${d}></td>
     <td><input type="number" step="0.5" data-l="${i}.qty" value="${esc(e.qty)}"${d}></td>
     <td><select data-l="${i}.uom"${d}>${selOpts(EQ_UNITS, e.uom || 'hr')}</select></td>
-    <td><input type="number" step="0.01" data-l="${i}.rate" value="${esc(e.rate)}"${d}></td>
+    ${uo ? `<input type="hidden" data-l="${i}.rate" value="${esc(e.rate)}">` : `<td><input type="number" step="0.01" data-l="${i}.rate" value="${esc(e.rate)}"${d}></td>`}
     <td><input type="number" step="0.5" data-l="${i}.standby" value="${esc(e.standby)}" title="Standby hours"${d}></td>
-    <td class="r mono-sm">${money2(num(e.qty) * num(e.rate) + num(e.standby) * num(e.standbyRate))}</td>
+    ${uo ? '' : `<td class="r mono-sm">${money2(num(e.qty) * num(e.rate) + num(e.standby) * num(e.standbyRate))}</td>`}
     <td>${ro ? '' : `<button class="btn sm dgr" data-rm="equip.${i}">×</button>`}</td></tr>`).join('');
 
   const matRows = (t.material || []).map((m, i) => `<tr>
     <td><input type="text" data-l="${i}.desc" value="${esc(m.desc)}" placeholder="Description"${d}></td>
     <td><input type="number" step="0.01" data-l="${i}.qty" value="${esc(m.qty)}"${d}></td>
     <td><select data-l="${i}.uom"${d}>${selOpts(MAT_UNITS, m.uom || 'ea')}</select></td>
-    <td><input type="number" step="0.01" data-l="${i}.price" value="${esc(m.price)}"${d}></td>
-    <td class="r mono-sm">${money2(num(m.qty) * num(m.price))}</td>
+    ${uo ? `<input type="hidden" data-l="${i}.price" value="${esc(m.price)}">` : `<td><input type="number" step="0.01" data-l="${i}.price" value="${esc(m.price)}"${d}></td>`}
+    ${uo ? '' : `<td class="r mono-sm">${money2(num(m.qty) * num(m.price))}</td>`}
     <td>${ro ? '' : `<button class="btn sm dgr" data-rm="material.${i}">×</button>`}</td></tr>`).join('');
 
   const thirdRows = (t.third || []).map((x, i) => `<tr>
@@ -3218,19 +3223,19 @@ function drawLem() {
 
     <h4 class="lem-sec">Labour</h4>
     <div class="tbl-scroll"><table class="lem-tbl">
-      <thead><tr><th>Name</th><th>Class</th><th>ST</th><th>OT</th><th>Rate</th><th>Sub</th><th class="r">Amount</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Class</th><th>ST</th><th>OT</th>${uo ? '' : '<th>Rate</th>'}<th>Sub</th>${uo ? '' : '<th class="r">Amount</th>'}<th></th></tr></thead>
       <tbody>${labourRows || '<tr><td colspan="8" class="note">No labour lines</td></tr>'}</tbody></table></div>
     ${ro ? '' : '<button class="btn sm" data-add="labour">Add labour</button>'}
 
     <h4 class="lem-sec">Equipment</h4>
     <div class="tbl-scroll"><table class="lem-tbl">
-      <thead><tr><th>Unit</th><th>Description</th><th>Qty</th><th>Per</th><th>Rate</th><th>Standby</th><th class="r">Amount</th><th></th></tr></thead>
+      <thead><tr><th>Unit</th><th>Description</th><th>Qty</th><th>Per</th>${uo ? '' : '<th>Rate</th>'}<th>Standby</th>${uo ? '' : '<th class="r">Amount</th>'}<th></th></tr></thead>
       <tbody>${equipRows || '<tr><td colspan="8" class="note">No equipment lines</td></tr>'}</tbody></table></div>
     ${ro ? '' : '<button class="btn sm" data-add="equip">Add equipment</button>'}
 
     <h4 class="lem-sec">Material</h4>
     <div class="tbl-scroll"><table class="lem-tbl">
-      <thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Price</th><th class="r">Amount</th><th></th></tr></thead>
+      <thead><tr><th>Description</th><th>Qty</th><th>Unit</th>${uo ? '' : '<th>Price</th><th class="r">Amount</th>'}<th></th></tr></thead>
       <tbody>${matRows || '<tr><td colspan="6" class="note">No material lines</td></tr>'}</tbody></table></div>
     ${ro ? '' : '<button class="btn sm" data-add="material">Add material</button>'}
 
@@ -3242,7 +3247,7 @@ function drawLem() {
     ${ro ? '' : '<button class="btn sm" data-add="third">Add third party</button>'}
 
     <hr class="rule">
-    <table class="lem-tot"><tbody>
+    ${uo ? `<div class="note">Hours and quantities only — the project manager applies rates before this ticket goes to the client.</div>` : `<table class="lem-tot"><tbody>
       <tr><td>Labour</td><td class="r mono-sm">${money2(tot.labour)}</td></tr>
       <tr><td>Equipment</td><td class="r mono-sm">${money2(tot.equip)}</td></tr>
       <tr><td>Material</td><td class="r mono-sm">${money2(tot.material)}</td></tr>
@@ -3254,21 +3259,24 @@ function drawLem() {
       <tr><td>Direct billed to client<br><span class="note">not on our invoice</span></td>
         <td class="r mono-sm">${money2(tot.direct)}</td></tr>
       <tr><td><b>Total project cost</b></td><td class="r mono-sm"><b>${money2(tot.projectCost)}</b></td></tr>` : ''}
-    </tbody></table>
+    </tbody></table>`}
 
     ${t.sig ? `<hr class="rule"><div class="note">Signed by <b>${esc(t.signedBy)}</b> on ${fmtTs(t.signedAt)}</div>
       <img data-imgref="${esc(t.sig)}" class="lem-sig" alt="signature">` : ''}
     ${t.approvedBy ? `<div class="note">Approved by ${esc(t.approvedBy)} on ${fmtTs(t.approvedAt)}</div>` : ''}
+    ${t.status === 'Field complete' && !uo ? `<div class="note" style="color:var(--warn)">Completed in the field by ${esc(t.fieldBy || t.by)}${t.fieldAt ? ' on ' + fmtTs(t.fieldAt) : ''}. Check the rates, then submit for signature.</div>` : ''}
     <div class="fld" style="margin-top:10px"><label>Office notes</label><textarea name="notes"${d}>${esc(t.notes)}</textarea></div>`;
 
   const buttons = [{ label:'Close', cls:'btn', fn: closeModal }];
   if (!ro) {
     buttons.push({ label:'Save draft', cls:'btn', fn: () => saveLem('keep') });
-    if (t.status === 'Draft' || t.status === 'Rejected') {
+    if (uo) {
+      if (t.status !== 'Field complete') buttons.push({ label:'Complete — send to office', cls:'btn pri', fn: () => saveLem('Field complete') });
+    } else if (t.status === 'Draft' || t.status === 'Field complete' || t.status === 'Rejected') {
       buttons.push({ label:'Submit for signature', cls:'btn pri', fn: () => saveLem('Submitted') });
     }
   }
-  if (t.status === 'Submitted') buttons.push({ label:'Sign', cls:'btn pri', fn: () => { closeModal(); signDialog(t.id); } });
+  if (t.status === 'Submitted' && !uo) buttons.push({ label:'Sign', cls:'btn pri', fn: () => { closeModal(); signDialog(t.id); } });
   if (t.status === 'Signed' && canEdit()) {
     buttons.push({ label:'Reject', cls:'btn dgr', fn: () => saveLem('Rejected') });
     buttons.push({ label:'Approve and post to cost', cls:'btn pri', fn: () => saveLem('Approved') });
@@ -3362,12 +3370,13 @@ function saveLem(newStatus) {
     t.status = newStatus;
     if (newStatus === 'Approved') { t.approvedBy = me().name; t.approvedAt = Date.now(); postLemCost(t); }
     if (newStatus === 'Signed')   { t.approvedBy = ''; t.approvedAt = null; }
+    if (newStatus === 'Field complete') { t.fieldBy = me().name; t.fieldAt = Date.now(); }
   }
   const ex = S.lems.findIndex(x => x.id === t.id);
   if (ex > -1) S.lems[ex] = t; else S.lems.push(t);
 
   logIt(t.siteId, 'Field ticket ' + t.number + ' — ' + t.status +
-    ' (' + money2(lemTotals(t).subtotal) + ')', 'lem');
+    (unitsOnly() ? '' : ' (' + money2(lemTotals(t).subtotal) + ')'), 'lem');
   closeModal(); save(); refreshAll();
   if (UI.view === 'field') renderField();
   if (UI.selected && UI.tab === 'lem') renderSheet();
@@ -3696,7 +3705,7 @@ function tabLem(s) {
   const val = list.filter(t => t.status !== 'Rejected').reduce((n, t) => n + lemTotals(t).subtotal, 0);
   return `<div class="card"><div class="card-h">Field tickets<span class="spacer"></span>
       <span class="pill">${money2(val)} ticketed</span>
-      ${canEdit() ? `<button class="btn sm pri" data-lemnew="${s.id}">New ticket</button>` : ''}</div>
+      ${canTicket() ? `<button class="btn sm pri" data-lemnew="${s.id}">New ticket</button>` : ''}</div>
     <div class="card-b flush">${list.length ? `<div class="tbl-scroll"><table><tbody>
       ${list.map(t => lemRow(t, false)).join('')}</tbody></table></div>`
       : '<div class="empty"><b>No tickets</b>Labour, equipment and material booked to this site appears here.</div>'}
@@ -3706,6 +3715,7 @@ function tabLem(s) {
 /* ---------------- printing ---------------- */
 async function printLem(id) {
   const t = S.lems.find(x => x.id === id); if (!t) return;
+  if (unitsOnly()) return toast('Tickets are printed by the office once rates are applied', true);
   const s = S.sites.find(x => x.id === t.siteId);
   const tot = lemTotals(t);
   const rows = (arr, cols) => arr.map(r => '<tr>' + cols.map(c =>
@@ -4928,7 +4938,7 @@ function tabLog(s) {
 
   return `<div class="card"><div class="card-h">Site activity<span class="spacer"></span>
       <span class="note">${linkable} linked record${linkable === 1 ? '' : 's'}</span>
-      ${canEdit() ? '<button class="btn sm pri" data-act="add-note">Add note</button>' : ''}</div>
+      ${canTicket() ? '<button class="btn sm pri" data-act="add-note">Add note</button>' : ''}</div>
     <div class="card-b flush">
       <div class="log-filters">${LOG_FILTERS.map(f =>
         `<button data-logf="${f.id}" class="${UI.logFilter === f.id ? 'on' : ''}">${f.label}</button>`).join('')}</div>
@@ -5680,7 +5690,7 @@ function wireAccessFields() {
 function accessDialog(id) {
   const u = S.users.find(x => x.id === id); if (!u) return;
   if (!canManageUsers()) return toast('Only an administrator can change access', true);
-  const roles = isProvider() ? ROLES : ['Admin', 'Project manager', 'Viewer'];
+  const roles = isProvider() ? ROLES : ['Admin', 'Project manager', 'Field lead', 'Viewer'];
   openModal('Access — ' + u.name, `
     <div class="grid2">
       <div class="fld"><label>Role</label><select name="role">${selOpts(roles, u.role)}</select></div>
@@ -6309,7 +6319,7 @@ function inviteDialog(tenantId) {
   if (!canManageUsers()) return toast('Only an administrator can invite people', true);
   const t = tenantId ? S.tenants.find(x => x.id === tenantId) : curTenant();
   const code = 'INV-' + Math.random().toString(36).slice(2, 8).toUpperCase();
-  const roles = isProvider() ? ROLES : ['Admin','Project manager','Viewer'];
+  const roles = isProvider() ? ROLES : ['Admin','Project manager','Field lead','Viewer'];
 
   openModal('Invite someone to ' + (t ? t.name : 'the workspace'), `
     <p class="note">This creates a one-time invitation code. Send it with the sign-up link — they choose
@@ -6374,11 +6384,16 @@ const ACCENTS = [
   { id:'ochre',  name:'Ochre',    c:'#7E5F10', d:'#60480B', l:'#F3EDDC' }
 ];
 const TENANT_KINDS = ['Producer', 'Service provider'];
-const ROLES = ['Provider admin', 'Admin', 'Project manager', 'Viewer'];
+const ROLES = ['Provider admin', 'Admin', 'Project manager', 'Field lead', 'Viewer'];
 
 /* ---------------- role helpers ---------------- */
 const isProvider      = () => me().role === 'Provider admin';
 const isViewer        = () => me().role === 'Viewer';
+/* A field lead raises tickets and forms from the field but never sees rates:
+   they record hours and quantities, the project manager prices them. */
+const isFieldLead     = () => me().role === 'Field lead';
+const canTicket       = () => canEdit() || (!!S.me && !!UI.tenant && isFieldLead());
+const unitsOnly       = () => isFieldLead();
 const isClient        = () => isViewer();
 const canEdit         = () => !!S.me && !!UI.tenant && ['Provider admin','Admin','Project manager'].indexOf(me().role) > -1;
 const canManageUsers  = () => !!S.me && ['Provider admin','Admin'].indexOf(me().role) > -1;

@@ -1,0 +1,47 @@
+rules_version = '2';
+
+// SiteView attachments. Paths mirror the app's CloudFiles.path():
+//   tenants/{tid}/docs/{docId}
+//
+// Kept deliberately simple. An earlier version also checked the uploaded
+// content type, which refused ordinary files whose MIME type the browser
+// reported as application/octet-stream. Type filtering is not what keeps one
+// company out of another's files - the tenant path and the user record do.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /tenants/{t}/docs/{id} {
+
+      function profile() {
+        return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+      }
+      function hasProfile() {
+        return request.auth != null
+          && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid));
+      }
+      function activeUser() { return hasProfile() && profile().active == true; }
+      function isProvider() { return activeUser() && profile().role == 'Provider admin'; }
+      function inTenant()   { return activeUser() && (profile().tid == t || isProvider()); }
+      function adminRole()  { return activeUser() && profile().role in ['Provider admin', 'Admin']; }
+
+      function editRole() {
+        return activeUser() && profile().role in ['Provider admin', 'Admin', 'Project manager', 'Field lead'];
+      }
+      // Photos and attachments captured inside a form belong to whoever filled
+      // the form, not to document control. Without this a project manager
+      // could not save a form that had a photo on it.
+      function formAttachment() { return id.matches('form(img|file)_.*'); }
+
+      allow read: if inTenant();
+
+      // Document control is administrators only. Form attachments follow the
+      // form instead, so field staff can complete their own paperwork.
+      allow write: if inTenant()
+                   && (adminRole() || (editRole() && formAttachment()))
+                   && request.resource.size < 25 * 1024 * 1024;
+
+      allow delete: if inTenant() && (adminRole() || (editRole() && formAttachment()));
+    }
+
+    match /{path=**} { allow read, write: if false; }
+  }
+}
