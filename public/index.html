@@ -1423,7 +1423,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-05f';
+const BUILD = '2026-11-05g';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -2982,16 +2982,22 @@ function nextNumber(prefix, list) {
 }
 
 /* ---------------- posting an approved ticket to cost ---------------- */
+/* A ticket shows on the site's cost page from the moment it exists: as
+   committed cost while it is unsigned or awaiting approval, and as actual
+   once approved. The forecast carries it either way. */
 function postLemCost(t) {
   const tot = lemTotals(t);
   unpostLemCost(t);
+  const firm = ['Approved', 'Invoiced'].indexOf(t.status) > -1;
+  const tag = firm ? '' : ' (' + t.status.toLowerCase() + ')';
 
   // what we invoice
   S.costs.push({
     id: 'ct_lem_' + t.id, tenantId: UI.tenant, siteId: t.siteId,
     scopeId: t.scopeId || null, afeId: t.afeId || null,
-    cat: 'Subcontract', desc: 'Field ticket ' + t.number, budget: 0, committed: 0,
-    actual: cents(tot.subtotal), forecast: cents(tot.subtotal),
+    cat: 'Subcontract', desc: 'Field ticket ' + t.number + tag, budget: 0,
+    committed: firm ? 0 : cents(tot.subtotal),
+    actual: firm ? cents(tot.subtotal) : 0, forecast: cents(tot.subtotal),
     vendor: 'Retired Environmental', invoice: t.number, date: t.date,
     lemId: t.id, billing: 'Rebilled'
   });
@@ -3002,8 +3008,8 @@ function postLemCost(t) {
     S.costs.push({
       id: 'ct_lem_' + t.id + '_d' + i, tenantId: UI.tenant, siteId: t.siteId,
       scopeId: t.scopeId || null, afeId: t.afeId || null,
-      cat: 'Subcontract', desc: (x.desc || 'Third party') + ' — direct billed',
-      budget: 0, committed: 0, actual: cents(x.amount), forecast: cents(x.amount),
+      cat: 'Subcontract', desc: (x.desc || 'Third party') + ' — direct billed' + tag,
+      budget: 0, committed: firm ? 0 : cents(x.amount), actual: firm ? cents(x.amount) : 0, forecast: cents(x.amount),
       vendor: x.vendor || 'Third party', invoice: t.number, date: t.date,
       lemId: t.id, billing: 'Direct'
     });
@@ -3368,12 +3374,13 @@ function saveLem(newStatus) {
 
   if (newStatus !== 'keep') {
     t.status = newStatus;
-    if (newStatus === 'Approved') { t.approvedBy = me().name; t.approvedAt = Date.now(); postLemCost(t); }
+    if (newStatus === 'Approved') { t.approvedBy = me().name; t.approvedAt = Date.now(); }
     if (newStatus === 'Signed')   { t.approvedBy = ''; t.approvedAt = null; }
     if (newStatus === 'Field complete') { t.fieldBy = me().name; t.fieldAt = Date.now(); }
   }
   const ex = S.lems.findIndex(x => x.id === t.id);
   if (ex > -1) S.lems[ex] = t; else S.lems.push(t);
+  if (t.status === 'Rejected') unpostLemCost(t); else postLemCost(t);
 
   logIt(t.siteId, 'Field ticket ' + t.number + ' — ' + t.status +
     (unitsOnly() ? '' : ' (' + money2(lemTotals(t).subtotal) + ')'), 'lem');
