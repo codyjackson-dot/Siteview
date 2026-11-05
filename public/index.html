@@ -1372,7 +1372,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
     <div class="auth-brand"><b>SiteView</b><span>Retired Environmental</span></div>
     <div id="authBody"></div>
   </div>
-  <div class="auth-foot">Retiring assets. Restoring land.</div>
+  <div class="auth-foot">Retiring assets. Restoring land. <span id="buildStamp"></span></div>
 </div>
 
 <div id="printArea"></div>
@@ -1416,6 +1416,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
+const BUILD = '2026-11-05a';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -5409,7 +5410,7 @@ function renderAdmin() {
 
     <div class="card"><div class="card-h">About</div><div class="card-b">
       <div class="note"><b>${esc(S.org.name)}</b> — ${esc(S.org.tagline)}<br>
-      SiteView keeps the map, the site file, the forms, and the money in one place, so a closure program can be handed to a client without assembling it from four systems.</div>
+      SiteView keeps the map, the site file, the forms, and the money in one place, so a closure program can be handed to a client without assembling it from four systems.<br><span class="mono-sm">Build ${BUILD}</span></div>
     </div></div>
   </div>`;
 
@@ -5898,12 +5899,16 @@ const Cloud = {
         }
       }
 
+      // The workspace record itself: only a provider may write it, and a
+      // refusal here must never be reported as if the real records failed.
       const t = curTenant();
       if (t && isProvider()) {
         const key = JSON.stringify(t);
         if (this.mirror._tenant !== key) {
-          const { id, ...rest } = t;
-          await base.set(rest, { merge: true });
+          try {
+            const { id, ...rest } = t;
+            await base.set(rest, { merge: true });
+          } catch (e) { console.warn('workspace record not written', e); }
           this.mirror._tenant = key;
         }
       }
@@ -7132,6 +7137,7 @@ function shrink(file) {
 }
 
 async function boot() {
+  if ($('#buildStamp')) $('#buildStamp').textContent = '· build ' + BUILD;
   await Store.detect();
   let saved = await Store.get(KEY);
   if (!saved) {
