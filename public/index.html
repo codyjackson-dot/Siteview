@@ -5335,7 +5335,7 @@ function renderAdmin() {
       }).join('')}</tbody></table></div></div>
 
     <div class="card"><div class="card-h">Accounts<span class="spacer"></span>
-      <button class="btn sm" id="pwSelf">Change my password</button>
+      ${Cloud.on ? '' : '<button class="btn sm" id="pwSelf">Change my password</button>'}
       ${canManageUsers() ? `<button class="btn sm pri" id="usrNew">${Cloud.on ? 'Invite someone' : 'Add person'}</button>` : ''}</div>
       <div class="card-b flush"><div class="tbl-scroll"><table>
         <thead><tr><th>Person</th><th>Username</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
@@ -5394,13 +5394,13 @@ function renderAdmin() {
       <hr class="rule">
       <div class="stack">
         <button class="btn" id="loadDemo">Load sample portfolio</button>
-        ${m.role === 'Admin' && !S.users.some(u => u.role === 'Provider admin') ? '<button class="btn" id="beProvider">Enable multi-company licensing</button>' : ''}
+        ${m.role === 'Admin' && !Cloud.on && !S.users.some(u => u.role === 'Provider admin') ? '<button class="btn" id="beProvider">Enable multi-company licensing</button>' : ''}
         <button class="btn dgr" id="wipe">Erase workspace data</button>
       </div>
       <div class="note" style="margin-top:8px">Importing merges by record id: matching records are replaced, new ones are added. Attached files are exported separately by design — export keeps the JSON small enough to email.</div>
     </div></div>
 
-    ${isProvider() ? `<div class="card"><div class="card-h">New accounts<span class="spacer"></span>
+    ${isProvider() && !Cloud.on ? `<div class="card"><div class="card-h">New accounts<span class="spacer"></span>
       <button class="btn sm pri" id="acFromSettings">Issue an activation code</button></div>
       <div class="card-b"><div class="note">This build will not create an account without a code you issued.
       Codes are checked against a secret compiled into the app, so they cannot be guessed — but anyone who
@@ -5899,7 +5899,7 @@ const Cloud = {
       }
 
       const t = curTenant();
-      if (t) {
+      if (t && isProvider()) {
         const key = JSON.stringify(t);
         if (this.mirror._tenant !== key) {
           const { id, ...rest } = t;
@@ -6269,7 +6269,7 @@ function renderLicence() {
 
     <div class="stack" style="margin-bottom:14px">
       <button class="btn pri" id="tnNew">Add a licensed company</button>
-      <button class="btn" id="acNew">Issue an activation code</button>
+      ${Cloud.on ? '' : '<button class="btn" id="acNew">Issue an activation code</button>'}
       ${UI.tenant ? `<button class="btn" id="tnBack">Return to ${esc(tenantName(UI.tenant))}</button>` : ''}
     </div>
 
@@ -6293,7 +6293,7 @@ function renderLicence() {
           <button class="btn pri sm" data-tn-open="${t.id}">Open workspace</button>
           <button class="btn sm" data-tn-edit="${t.id}">Licence</button>
           <button class="btn sm" data-tn-user="${t.id}">${Cloud.on ? 'Invite an administrator' : 'Add administrator'}</button>
-          <button class="btn sm" data-tn-code="${t.id}">Activation code</button>
+          ${Cloud.on ? '' : `<button class="btn sm" data-tn-code="${t.id}">Activation code</button>`}
           <button class="btn sm" data-tn-exp="${t.id}">Export workspace</button>
           <button class="btn sm ${t.status === 'Suspended' ? '' : 'dgr'}" data-tn-susp="${t.id}">${t.status === 'Suspended' ? 'Restore' : 'Suspend'}</button>
           <button class="btn sm dgr" data-tn-del="${t.id}">Delete</button>
@@ -6303,7 +6303,7 @@ function renderLicence() {
   </div>`;
 
   $('#tnNew').onclick = () => tenantDialog(null);
-  $('#acNew').onclick = () => issueCodeDialog(null);
+  if ($('#acNew')) $('#acNew').onclick = () => issueCodeDialog(null);
   $$('#paneLicence [data-tn-code]').forEach(b => b.onclick = () => issueCodeDialog(b.dataset.tnCode));
   if ($('#tnBack')) $('#tnBack').onclick = () => { enterWorkspace(UI.tenant, true); go('map'); };
   $$('#paneLicence [data-tn-open]').forEach(b => b.onclick = () => { enterWorkspace(b.dataset.tnOpen); go('map'); });
