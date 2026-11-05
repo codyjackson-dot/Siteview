@@ -1423,13 +1423,32 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-05c';
+const BUILD = '2026-11-05d';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
 
 /* ---------------- reference data ---------------- */
-const DIVISIONS = ['Retired Environmental', 'Retired Project', 'Field Services', 'Subcontracted'];
+/* Divisions are set per workspace under Settings. Until an administrator
+   changes them, Retired Environmental's own two apply. The record rides in
+   the rate-book collection, which every administrator may write. */
+const DEFAULT_DIVISIONS = [
+  { name:'Reclamation, Remediation & Risk Management', code:'RRR' },
+  { name:'Decommissioning & Field Services', code:'DFS' }
+];
+const tenantSettings = () => S.rates.find(r => r.kind === 'settings' && r.tenantId === UI.tenant) || null;
+function divisions() {
+  const st = tenantSettings();
+  return st && Array.isArray(st.divisions) && st.divisions.length ? st.divisions : DEFAULT_DIVISIONS;
+}
+const divisionNames = () => divisions().map(d => d.name);
+/* names in use on sites that are no longer in the list still filter and show */
+function divisionChoices() {
+  const names = divisionNames().slice();
+  S.sites.filter(x => x.tenantId === UI.tenant && x.division && names.indexOf(x.division) === -1)
+    .forEach(x => { if (names.indexOf(x.division) === -1) names.push(x.division); });
+  return names;
+}
 
 const PHASES = [
   { id:'active',          name:'Active',                  short:'Active',      c:'--ph-active' },
@@ -1667,18 +1686,30 @@ function siteRoll(id) {
 }
 const clientName = id => (S.clients.find(c => c.id === id) || {}).name || '—';
 
+/* A person can be limited to one client, to whole divisions, or to named
+   sites. Administrators always see the whole workspace. */
+function canSeeSite(s, m) {
+  m = m || me();
+  if (!m || !m.id) return false;
+  if (m.role === 'Provider admin' || m.role === 'Admin') return true;
+  if (m.clientId && s.clientId !== m.clientId) return false;
+  const divs = Array.isArray(m.divisions) ? m.divisions : [], ids = Array.isArray(m.sites) ? m.sites : [];
+  if (!divs.length && !ids.length) return true;
+  return divs.indexOf(s.division || divisionNames()[0]) > -1 || ids.indexOf(s.id) > -1;
+}
+const sitesForMe = () => (!S.me || !UI.tenant) ? [] : S.sites.filter(s => s.tenantId === UI.tenant && canSeeSite(s));
+const restrictedView = () => { const m = me(); return !!(m.clientId || (m.divisions || []).length || (m.sites || []).length); };
+
 function visibleSites() {
-  const m = me();
   if (!S.me || !UI.tenant) return [];
-  let list = S.sites.filter(s => s.tenantId === UI.tenant);
-  if (m.clientId) list = list.filter(s => s.clientId === m.clientId);
+  let list = sitesForMe();
   const q = UI.q.trim().toLowerCase();
   if (q) list = list.filter(s => [s.name, s.uwi, s.licence, s.lsd, s.surfaceLoc, clientName(s.clientId)]
     .join(' ').toLowerCase().includes(q));
   if (UI.fClient) list = list.filter(s => s.clientId === UI.fClient);
   if (UI.fPhase)  list = list.filter(s => s.phase === UI.fPhase);
   if (UI.fStatus) list = list.filter(s => s.status === UI.fStatus);
-  if (UI.fDivision) list = list.filter(s => (s.division || DIVISIONS[0]) === UI.fDivision);
+  if (UI.fDivision) list = list.filter(s => (s.division || divisionNames()[0]) === UI.fDivision);
   return list.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -1996,7 +2027,7 @@ function renderFilters() {
   $('#fStatus').innerHTML = '<option value="">All statuses</option>' +
     SITE_STATUS.map(s => `<option value="${s}"${UI.fStatus === s ? ' selected' : ''}>${s}</option>`).join('');
   $('#fDivision').innerHTML = '<option value="">All divisions</option>' +
-    DIVISIONS.map(d => `<option value="${d}"${UI.fDivision === d ? ' selected' : ''}>${d}</option>`).join('');
+    divisionChoices().map(d => `<option value="${d}"${UI.fDivision === d ? ' selected' : ''}>${esc(d)}</option>`).join('');
 }
 
 /* ---------------- site list ---------------- */
@@ -2897,9 +2928,14 @@ const EQ_UNITS = ['hr', 'day', 'km', 'load'];
 const MAT_UNITS = ['ea', 'm3', 'tonne', 'm', 'L', 'bag', 'load'];
 const GST_RATE = 0.05;
 
-const tLems     = () => S.lems.filter(x => x.tenantId === UI.tenant);
+const tLems     = () => {
+  const list = S.lems.filter(x => x.tenantId === UI.tenant);
+  if (!restrictedView()) return list;
+  const ok = {}; sitesForMe().forEach(s => { ok[s.id] = 1; });
+  return list.filter(x => !x.siteId || ok[x.siteId]);
+};
 const tInvoices = () => S.invoices.filter(x => x.tenantId === UI.tenant);
-const tRates    = () => S.rates.filter(x => x.tenantId === UI.tenant);
+const tRates    = () => S.rates.filter(x => x.tenantId === UI.tenant && x.kind !== 'settings');
 const siteLems  = id => S.lems.filter(x => x.siteId === id);
 
 const canInvoice = () => canEdit();
@@ -5173,7 +5209,7 @@ function siteDialog(id, lat, lng) {
       <div class="fld"><label>Land tenure</label><select name="landOwner">${selOpts(['Freehold','Crown','Municipal','Mixed'], s ? s.landOwner : 'Freehold')}</select></div>
       <div class="fld"><label>Latitude</label><input type="number" step="0.00001" name="lat" value="${s ? s.lat : (lat != null ? lat.toFixed(5) : '')}"></div>
       <div class="fld"><label>Longitude</label><input type="number" step="0.00001" name="lng" value="${s ? s.lng : (lng != null ? lng.toFixed(5) : '')}"></div>
-      <div class="fld"><label>Delivering division</label><select name="division">${selOpts(DIVISIONS, s ? s.division : DIVISIONS[0])}</select></div>
+      <div class="fld"><label>Delivering division</label><select name="division">${selOpts(divisionChoices(), s ? s.division : divisionNames()[0])}</select></div>
       <div class="fld"><label>Target certificate date</label><input type="date" name="targetCert" value="${s ? s.targetCert : ''}"></div>
     </div>
     <div class="fld"><label>Access and site notes</label><textarea name="accessNotes" placeholder="Gate codes, approach, landowner contact, hazards">${esc(s ? s.accessNotes : '')}</textarea></div>
@@ -5459,13 +5495,19 @@ function renderAdmin() {
         <td><span class="pill ${u.role === 'Client' ? '' : 'info'}">${esc(u.role)}</span></td>
         <td class="mono-sm">${u.lastSignIn ? fmtTs(u.lastSignIn) : '—'}</td>
         <td class="r"><div class="row-actions">
-          ${canManageUsers() ? `<button class="btn sm" data-usr="${u.id}">Edit</button>` : ''}
+          ${canManageUsers() ? (Cloud.on ? `<button class="btn sm" data-acc="${u.id}">Access</button>` : `<button class="btn sm" data-usr="${u.id}">Edit</button>`) : ''}
           ${canManageUsers() ? `<button class="btn sm" data-pwr="${u.id}">${u.username ? 'Reset password' : 'Give access'}</button>` : ''}
           ${canManageUsers() && u.id !== S.me ? `<button class="btn sm ${u.active === false ? '' : 'dgr'}" data-act-t="${u.id}">${u.active === false ? 'Restore' : 'Disable'}</button>` : ''}
         </div></td></tr>`).join('')}</tbody></table></div></div>
       <div class="card-b"><div class="note">Passwords are stored only as a salted, repeatedly hashed digest and are never included in an export.
         Sessions expire after ${SESSION_HOURS} hours, or ${IDLE_MINUTES} minutes idle. This gate controls who can open the app on this
         device; it is not server-side security, so keep the device itself locked.</div></div></div>
+
+    <div class="card"><div class="card-h">Divisions<span class="spacer"></span>
+      ${canManageUsers() ? '<button class="btn sm" id="divEdit">Edit</button>' : ''}</div>
+      <div class="card-b flush"><table><tbody>${divisions().map(d => `<tr><td><b>${esc(d.name)}</b></td><td class="r mono-sm">${esc(d.code || '')}</td>
+        <td class="r mono-sm">${S.sites.filter(x => x.tenantId === UI.tenant && x.division === d.name).length} sites</td></tr>`).join('')}</tbody></table></div>
+      <div class="card-b"><div class="note">Every site belongs to a division; the list on the map filters by it and people can be limited to one. ${tenantSettings() ? '' : 'These are the defaults — edit them to match this workspace.'}</div></div></div>
 
     <div class="card"><div class="card-h">Access log<span class="spacer"></span><span class="note">${S.audit.length} events</span></div>
       <div class="card-b flush">${S.audit.length ? `<table><tbody>${S.audit.filter(a => isProvider() || a.tenantId === UI.tenant).slice(0, 25).map(a => `<tr>
@@ -5541,10 +5583,12 @@ function renderAdmin() {
   $('#btnSignOut').onclick = () => Auth.signOut();
   $('#btnLock2').onclick = () => Auth.lock('manual');
   if ($('#cliNew')) $('#cliNew').onclick = () => clientDialog(null);
+  if ($('#divEdit')) $('#divEdit').onclick = () => divisionsDialog();
   if ($('#usrNew')) $('#usrNew').onclick = () => Cloud.on ? inviteDialog(UI.tenant) : userDialog(null);
   if ($('#pwSelf')) $('#pwSelf').onclick = () => changePasswordDialog(false);
   $$('#paneAdmin [data-cli]').forEach(b => b.onclick = () => clientDialog(b.dataset.cli));
   $$('#paneAdmin [data-usr]').forEach(b => b.onclick = () => userDialog(b.dataset.usr));
+  $$('#paneAdmin [data-acc]').forEach(b => b.onclick = () => accessDialog(b.dataset.acc));
   $$('#paneAdmin [data-pwr]').forEach(b => b.onclick = () => resetPasswordDialog(b.dataset.pwr));
   $$('#paneAdmin [data-act-t]').forEach(b => b.onclick = () => toggleActive(b.dataset.actT));
   if ($('#upWs')) $('#upWs').onclick = () => uploadWorkspace();
@@ -5569,6 +5613,26 @@ function renderAdmin() {
   };
 }
 
+function divisionsDialog() {
+  openModal('Divisions', `
+    <p class="note">One per line. Add a short code after a bar if you use one, e.g. <span class="mono-sm">Decommissioning &amp; Field Services | DFS</span>.
+    Renaming a division does not move its sites — edit those sites to the new name.</p>
+    <div class="fld"><label>Divisions</label><textarea name="divs" style="min-height:120px">${esc(divisions().map(d => d.name + (d.code ? ' | ' + d.code : '')).join('\n'))}</textarea></div>`,
+    [{ label:'Cancel', cls:'btn', fn: closeModal },
+     { label:'Save divisions', cls:'btn pri', fn: () => {
+        const list = mv('divs').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+          const [name, code] = l.split('|').map(x => x.trim());
+          return { name, code: code || '' };
+        });
+        if (!list.length) return toast('Keep at least one division', true);
+        let st = tenantSettings();
+        if (st) st.divisions = list;
+        else S.rates.push({ id: 'settings_' + UI.tenant, tenantId: UI.tenant, kind: 'settings', divisions: list, updated: Date.now() });
+        audit('Divisions updated', list.map(d => d.name).join(', '));
+        closeModal(); save(); renderAdmin(); renderFilters(); toast('Divisions saved');
+     }}]);
+}
+
 function clientDialog(id) {
   const c = id ? S.clients.find(x => x.id === id) : null;
   openModal(c ? 'Edit client' : 'Add client', `
@@ -5582,6 +5646,65 @@ function clientDialog(id) {
         if (c) Object.assign(c, o); else S.clients.push(Object.assign({ id: uid('cl'), tenantId: UI.tenant }, o));
         closeModal(); renderAdmin(); renderFilters(); refreshAll(); toast('Client saved');
      }}]);
+}
+
+/* Division and site limits, shared by the invitation, the access dialog and
+   the claude.ai licence dialog. */
+function accessFieldsHtml(u) {
+  const divs = (u && u.divisions) || [], ids = (u && u.sites) || [];
+  const sites = S.sites.filter(x => x.tenantId === UI.tenant).slice().sort((a, b) => a.name.localeCompare(b.name));
+  return `<div class="fld"><label>Limit to divisions</label>
+      ${divisionChoices().map(d => `<label class="chk"><input type="checkbox" data-accdiv="${esc(d)}"${divs.indexOf(d) > -1 ? ' checked' : ''}><span>${esc(d)}</span></label>`).join('')}
+      <div class="hint">Nothing ticked means every division.</div></div>
+    <div class="fld"><label>Limit to specific sites</label>
+      <input type="text" id="accQ" placeholder="Filter the list" autocomplete="off">
+      <div id="accSites" style="max-height:170px;overflow:auto;border:1px solid var(--rule-2);border-radius:4px;padding:4px 8px;margin-top:4px">
+        ${sites.map(x => `<label class="chk" data-accrow="${esc(x.name.toLowerCase())}"><input type="checkbox" data-accsite="${x.id}"${ids.indexOf(x.id) > -1 ? ' checked' : ''}><span>${esc(x.name)}<span class="note"> · ${esc(x.division || '')}</span></span></label>`).join('') || '<div class="note">No sites yet</div>'}
+      </div>
+      <div class="hint">A person limited this way sees the ticked sites plus every site in a ticked division. Administrators always see everything.</div></div>`;
+}
+function readAccessFields() {
+  const b = $('#mBody');
+  return { divisions: $$('[data-accdiv]:checked', b).map(x => x.dataset.accdiv),
+           sites: $$('[data-accsite]:checked', b).map(x => x.dataset.accsite) };
+}
+function wireAccessFields() {
+  const q = $('#accQ'); if (!q) return;
+  q.addEventListener('input', () => {
+    const v = q.value.trim().toLowerCase();
+    $$('#accSites [data-accrow]').forEach(l => { l.style.display = !v || l.dataset.accrow.indexOf(v) > -1 || $('input', l).checked ? '' : 'none'; });
+  });
+}
+
+/* Role, client and site limits for an existing account, written to the server. */
+function accessDialog(id) {
+  const u = S.users.find(x => x.id === id); if (!u) return;
+  if (!canManageUsers()) return toast('Only an administrator can change access', true);
+  const roles = isProvider() ? ROLES : ['Admin', 'Project manager', 'Viewer'];
+  openModal('Access — ' + u.name, `
+    <div class="grid2">
+      <div class="fld"><label>Role</label><select name="role">${selOpts(roles, u.role)}</select></div>
+      <div class="fld"><label>Restrict to one ${unitWord()}</label>
+        <select name="unit"><option value="">Whole workspace</option>
+        ${tClients().map(c => `<option value="${c.id}"${u.clientId === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+    </div>
+    ${accessFieldsHtml(u)}
+    <label class="chk"><input type="checkbox" name="uactive" ${u.active !== false ? 'checked' : ''}><span>Account active</span></label>`,
+    [{ label:'Cancel', cls:'btn', fn: closeModal },
+     { label:'Save access', cls:'btn pri', fn: async () => {
+        if (u.id === S.me && !$('[name=uactive]', $('#mBody')).checked) return toast('You cannot deactivate yourself', true);
+        const acc = readAccessFields();
+        const patch = { role: mv('role'), unit: mv('unit') || null, divisions: acc.divisions, sites: acc.sites,
+                        active: $('[name=uactive]', $('#mBody')).checked };
+        try {
+          if (Cloud.on && Cloud.kind === 'claude') await Cloud.setLicence(u.id, patch);
+          else if (Cloud.on) await Cloud.db.collection('users').doc(u.id).update(patch);
+        } catch (e) { return toast('Could not save access: ' + ((e && e.message) || 'refused'), true); }
+        Object.assign(u, { role: patch.role, clientId: patch.unit, divisions: patch.divisions, sites: patch.sites, active: patch.active });
+        audit('Access updated', u.name + ' — ' + patch.role + (patch.divisions.length ? ' · ' + patch.divisions.join(', ') : '') + (patch.sites.length ? ' · ' + patch.sites.length + ' sites' : ''));
+        closeModal(); save(); renderAdmin(); renderFilters(); renderList(); renderMarkers(); toast('Access saved');
+     }}]);
+  wireAccessFields();
 }
 
 function userDialog(id) {
@@ -5888,6 +6011,7 @@ const Cloud = {
       if (inv.expires && inv.expires < today()) throw new Error('That invitation has expired.');
       await this.db.collection('users').doc(this.uid).set({
         tid: inv.tid || null, role: inv.role, name: name || inv.name || email,
+        divisions: Array.isArray(inv.divisions) ? inv.divisions : [], sites: Array.isArray(inv.sites) ? inv.sites : [],
         title: title || inv.title || '', unit: inv.unit || null, active: true,
         email: email.trim(), invite: code.trim(), created: Date.now()
       });
@@ -6120,6 +6244,7 @@ const strip = d => { const o = Object.assign({}, d); delete o._ts; return o; };
 const cloudToUser = (uid, d) => ({
   id: uid, tenantId: d.tid || null, name: d.name, title: d.title || '',
   role: d.role, clientId: d.unit || null, active: d.active !== false,
+  divisions: Array.isArray(d.divisions) ? d.divisions : [], sites: Array.isArray(d.sites) ? d.sites : [],
   email: d.email || '', lastSignIn: d.lastSignIn || null
 });
 
@@ -6191,6 +6316,7 @@ function inviteDialog(tenantId) {
       <div class="fld"><label>Role</label><select name="role">${selOpts(roles, 'Project manager')}</select></div>
       <div class="fld"><label>Title</label><input type="text" name="title" placeholder="Field supervisor"></div>
     </div>
+    ${accessFieldsHtml({})}
     <div class="fld"><label>Restrict to one ${unitWord()}</label>
       <select name="unit"><option value="">Whole workspace</option>
       ${tClients().map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
@@ -6200,7 +6326,8 @@ function inviteDialog(tenantId) {
     [{ label:'Close', cls:'btn', fn: closeModal },
      { label:'Create invitation', cls:'btn pri', fn: async () => {
         if (!mv('nm')) return toast('Enter their name', true);
-        const rec = { tid: (t ? t.id : null), role: mv('role'), name: mv('nm'),
+        const acc = readAccessFields();
+        const rec = { tid: (t ? t.id : null), role: mv('role'), name: mv('nm'), divisions: acc.divisions, sites: acc.sites,
                       title: mv('title'), unit: mv('unit') || null, expires: mv('exp'),
                       by: me().name, at: Date.now() };
         if (mv('role') === 'Provider admin') rec.tid = null;
@@ -6218,6 +6345,7 @@ function inviteDialog(tenantId) {
           try { document.execCommand('copy'); toast('Copied'); } catch (e) { toast('Select and copy manually', true); }
         };
      }}]);
+  wireAccessFields();
 }
 
 /* ==========================================================================
