@@ -703,6 +703,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
   --ph-remediation:#6A5AA0;
   --ph-reclamation:#4E7A4A;
   --ph-certified:#2C5638;
+  --ph-other:#5B6B8C;
 
   --rail:56px;
   --list:330px;
@@ -1288,6 +1289,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
           <select id="fClient"></select>
           <select id="fPhase"></select>
           <select id="fStatus"></select>
+          <select id="fDivision"></select>
         </div>
         <div class="list-meta">
           <span><b id="cntSites">0</b> sites shown</span>
@@ -1421,12 +1423,14 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-05b';
+const BUILD = '2026-11-05c';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
 
 /* ---------------- reference data ---------------- */
+const DIVISIONS = ['Retired Environmental', 'Retired Project', 'Field Services', 'Subcontracted'];
+
 const PHASES = [
   { id:'active',          name:'Active',                  short:'Active',      c:'--ph-active' },
   { id:'suspended',       name:'Suspended / inactive',    short:'Suspended',   c:'--ph-suspended' },
@@ -1436,7 +1440,10 @@ const PHASES = [
   { id:'remediation',     name:'Remediation',             short:'Remediation', c:'--ph-remediation' },
   { id:'reclamation',     name:'Reclamation',             short:'Reclamation', c:'--ph-reclamation' },
   { id:'certified',       name:'Reclamation certified',   short:'Certified',   c:'--ph-certified' },
+  { id:'other',           name:'Other work (non-ARO)',    short:'Other',       c:'--ph-other' },
 ];
+/* the closure lifecycle runs through the ARO phases only; other work sits outside it */
+const LIFECYCLE = PHASES.filter(p => p.id !== 'other');
 const PHASE = Object.fromEntries(PHASES.map(p => [p.id, p]));
 
 const SCOPE_TYPES = [
@@ -1445,7 +1452,8 @@ const SCOPE_TYPES = [
   'Remediation — excavation','Remediation — in situ','Soil handling and disposal',
   'Reclamation earthworks','Topsoil replacement','Revegetation','Weed control',
   'Groundwater monitoring','Detailed site assessment closure','Reclamation certificate application',
-  'Access and lease road','Fencing','Regulatory and reporting','Other'
+  'Access and lease road','Fencing','Regulatory and reporting',
+  'Field services','Earthworks','Hauling','Spill response','Maintenance','Other'
 ];
 
 const SCOPE_PHASE = {
@@ -1458,7 +1466,8 @@ const SCOPE_PHASE = {
   'Reclamation earthworks':'reclamation','Topsoil replacement':'reclamation',
   'Revegetation':'reclamation','Weed control':'reclamation','Access and lease road':'reclamation',
   'Fencing':'reclamation','Reclamation certificate application':'certified',
-  'Regulatory and reporting':'assessment','Other':'assessment'
+  'Regulatory and reporting':'assessment','Other':'assessment',
+  'Field services':'other','Earthworks':'other','Hauling':'other','Spill response':'other','Maintenance':'other'
 };
 
 const COST_CATS = ['Labour','Equipment','Trucking','Disposal','Subcontract','Materials',
@@ -1597,7 +1606,7 @@ const S = {
 const UI = { view:'map', tenant:null, selected:null, tab:'summary', path:'',
   layers: { wells:true, facilities:true, pipelines:true, other:true, grid:false, bounds:true },
   tkWho:'me', tkStatus:'open', tkSite:'', logFilter:'',
-  fieldTab:'tickets', lemStatus:'', lemSite:'', basemap:'imagery', addMode:false, mobileMap:false, q:'', fClient:'', fPhase:'', fStatus:'' };
+  fieldTab:'tickets', lemStatus:'', lemSite:'', basemap:'imagery', addMode:false, mobileMap:false, q:'', fClient:'', fPhase:'', fStatus:'', fDivision:'' };
 
 let saveTimer = null;
 function save() {
@@ -1669,6 +1678,7 @@ function visibleSites() {
   if (UI.fClient) list = list.filter(s => s.clientId === UI.fClient);
   if (UI.fPhase)  list = list.filter(s => s.phase === UI.fPhase);
   if (UI.fStatus) list = list.filter(s => s.status === UI.fStatus);
+  if (UI.fDivision) list = list.filter(s => (s.division || DIVISIONS[0]) === UI.fDivision);
   return list.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -1985,6 +1995,8 @@ function renderFilters() {
     PHASES.map(p => `<option value="${p.id}"${UI.fPhase === p.id ? ' selected' : ''}>${p.short}</option>`).join('');
   $('#fStatus').innerHTML = '<option value="">All statuses</option>' +
     SITE_STATUS.map(s => `<option value="${s}"${UI.fStatus === s ? ' selected' : ''}>${s}</option>`).join('');
+  $('#fDivision').innerHTML = '<option value="">All divisions</option>' +
+    DIVISIONS.map(d => `<option value="${d}"${UI.fDivision === d ? ' selected' : ''}>${d}</option>`).join('');
 }
 
 /* ---------------- site list ---------------- */
@@ -3860,8 +3872,8 @@ function tabSummary(s) {
   const spentPct = r.forecast ? Math.min(100, r.actual / r.forecast * 100) : 0;
   const comPct = r.forecast ? Math.min(100 - spentPct, r.committed / r.forecast * 100) : 0;
 
-  const curIdx = PHASES.findIndex(p => p.id === s.phase);
-  const spine = PHASES.map((p, i) => {
+  const curIdx = LIFECYCLE.findIndex(p => p.id === s.phase);
+  const spine = LIFECYCLE.map((p, i) => {
     const inScope = scopes.filter(sc => SCOPE_PHASE[sc.type] === p.id);
     const c = roll(siteCosts(s.id).filter(x => inScope.some(sc => sc.id === x.scopeId)));
     const state = i < curIdx ? 'done' : i === curIdx ? 'now' : '';
@@ -3869,7 +3881,7 @@ function tabSummary(s) {
     const meta = inScope.length
       ? inScope.length + ' scope' + (inScope.length > 1 ? 's' : '') + ' · ' + inScope.filter(x => x.status === 'Complete').length + ' complete'
       : (i <= curIdx ? 'No scopes recorded' : 'Not yet scoped');
-    return `<div class="spine-row ${state}">
+    return `<div class="spine-row ${s.phase === 'other' ? '' : state}">
       <span class="rail-dot"><i style="${style}"></i></span>
       <span><span class="lb">${p.name}</span><br><span class="mt">${meta}</span></span>
       <span class="money">${c.forecast ? money(c.forecast) : '—'}<small>${c.actual ? money(c.actual) + ' spent' : ''}</small></span>
@@ -5161,7 +5173,7 @@ function siteDialog(id, lat, lng) {
       <div class="fld"><label>Land tenure</label><select name="landOwner">${selOpts(['Freehold','Crown','Municipal','Mixed'], s ? s.landOwner : 'Freehold')}</select></div>
       <div class="fld"><label>Latitude</label><input type="number" step="0.00001" name="lat" value="${s ? s.lat : (lat != null ? lat.toFixed(5) : '')}"></div>
       <div class="fld"><label>Longitude</label><input type="number" step="0.00001" name="lng" value="${s ? s.lng : (lng != null ? lng.toFixed(5) : '')}"></div>
-      <div class="fld"><label>Delivering division</label><select name="division">${selOpts(['Retired Environmental','Subcontracted'], s ? s.division : 'Retired Environmental')}</select></div>
+      <div class="fld"><label>Delivering division</label><select name="division">${selOpts(DIVISIONS, s ? s.division : DIVISIONS[0])}</select></div>
       <div class="fld"><label>Target certificate date</label><input type="date" name="targetCert" value="${s ? s.targetCert : ''}"></div>
     </div>
     <div class="fld"><label>Access and site notes</label><textarea name="accessNotes" placeholder="Gate codes, approach, landowner contact, hazards">${esc(s ? s.accessNotes : '')}</textarea></div>
@@ -7091,7 +7103,7 @@ async function uploadWorkspace() {
    ========================================================================== */
 function wireGlobal() {
   $('#q').addEventListener('input', e => { UI.q = e.target.value; renderList(); renderMarkers(); });
-  ['fClient','fPhase','fStatus'].forEach(k => {
+  ['fClient','fPhase','fStatus','fDivision'].forEach(k => {
     $('#' + k).addEventListener('change', e => { UI[k] = e.target.value; renderList(); renderMarkers(); });
   });
 
