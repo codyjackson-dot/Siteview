@@ -1423,7 +1423,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-05g';
+const BUILD = '2026-11-07a';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -1442,11 +1442,21 @@ function divisions() {
   return st && Array.isArray(st.divisions) && st.divisions.length ? st.divisions : DEFAULT_DIVISIONS;
 }
 const divisionNames = () => divisions().map(d => d.name);
-/* names in use on sites that are no longer in the list still filter and show */
+/* A site works in whichever divisions its scopes belong to. A site with no
+   scopes yet falls back to the division set on the site itself, if any. */
+function siteDivisions(s) {
+  if (!s) return [];
+  const out = [];
+  S.scopes.filter(x => x.siteId === s.id).forEach(x => { if (x.division && out.indexOf(x.division) === -1) out.push(x.division); });
+  if (!out.length && s.division) out.push(s.division);
+  return out;
+}
+/* names in use that are no longer in the list still filter and show */
 function divisionChoices() {
   const names = divisionNames().slice();
-  S.sites.filter(x => x.tenantId === UI.tenant && x.division && names.indexOf(x.division) === -1)
-    .forEach(x => { if (names.indexOf(x.division) === -1) names.push(x.division); });
+  const add = d => { if (d && names.indexOf(d) === -1) names.push(d); };
+  S.scopes.forEach(x => add(x.division));
+  S.sites.filter(x => x.tenantId === UI.tenant).forEach(x => add(x.division));
   return names;
 }
 
@@ -1695,7 +1705,7 @@ function canSeeSite(s, m) {
   if (m.clientId && s.clientId !== m.clientId) return false;
   const divs = Array.isArray(m.divisions) ? m.divisions : [], ids = Array.isArray(m.sites) ? m.sites : [];
   if (!divs.length && !ids.length) return true;
-  return divs.indexOf(s.division || divisionNames()[0]) > -1 || ids.indexOf(s.id) > -1;
+  return siteDivisions(s).some(d => divs.indexOf(d) > -1) || ids.indexOf(s.id) > -1;
 }
 const sitesForMe = () => (!S.me || !UI.tenant) ? [] : S.sites.filter(s => s.tenantId === UI.tenant && canSeeSite(s));
 const restrictedView = () => { const m = me(); return !!(m.clientId || (m.divisions || []).length || (m.sites || []).length); };
@@ -1709,7 +1719,7 @@ function visibleSites() {
   if (UI.fClient) list = list.filter(s => s.clientId === UI.fClient);
   if (UI.fPhase)  list = list.filter(s => s.phase === UI.fPhase);
   if (UI.fStatus) list = list.filter(s => s.status === UI.fStatus);
-  if (UI.fDivision) list = list.filter(s => (s.division || divisionNames()[0]) === UI.fDivision);
+  if (UI.fDivision) list = list.filter(s => siteDivisions(s).indexOf(UI.fDivision) > -1);
   return list.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -3945,7 +3955,7 @@ function tabSummary(s) {
     ['Client', clientName(s.clientId)], ['Site type', s.type], ['Status', s.status],
     ['Licence', s.licence], ['UWI', s.uwi], ['Surface location', s.lsd],
     ['Land use', s.landUse], ['Land tenure', s.landOwner], ['Lease area', s.areaHa ? s.areaHa + ' ha' : '—'],
-    ['Delivering division', s.division], ['Target certificate', fmtDate(s.targetCert)],
+    ['Divisions', siteDivisions(s).join(', ') || '—'], ['Target certificate', fmtDate(s.targetCert)],
     ['Coordinates', s.lat.toFixed(5) + ', ' + s.lng.toFixed(5)]
   ];
 
@@ -4023,6 +4033,7 @@ function scopeDialog(scId) {
     <div class="fld"><label>Scope type</label><select name="type">${selOpts(SCOPE_TYPES, sc ? sc.type : 'Phase I ESA')}</select></div>
     <div class="fld"><label>Label shown on the site file</label><input type="text" name="name" value="${esc(sc ? sc.name : '')}" placeholder="Defaults to the scope type"></div>
     <div class="grid2">
+      <div class="fld"><label>Delivering division</label><select name="division">${selOpts(divisionChoices(), sc ? (sc.division || siteDivisions(s)[0]) : (siteDivisions(s)[0] || divisionNames()[0]))}</select></div>
       <div class="fld"><label>Status</label><select name="status">${selOpts(SCOPE_STATUS, sc ? sc.status : 'Planned')}</select></div>
       <div class="fld"><label>Vendor or crew</label><input type="text" name="vendor" value="${esc(sc ? sc.vendor : '')}"></div>
       <div class="fld"><label>Start</label><input type="date" name="start" value="${sc ? sc.start : ''}"></div>
@@ -4032,7 +4043,7 @@ function scopeDialog(scId) {
     [{ label:'Cancel', cls:'btn', fn: closeModal },
      { label: sc ? 'Save scope' : 'Add scope', cls:'btn pri', fn: () => {
         const type = mv('type');
-        const o = { type, name: mv('name') || type, status: mv('status'), vendor: mv('vendor'),
+        const o = { type, name: mv('name') || type, status: mv('status'), vendor: mv('vendor'), division: mv('division'),
                     start: mv('start'), end: mv('end'), notes: mv('notes') };
         if (sc) { Object.assign(sc, o); logIt(s.id, 'Scope updated: ' + o.name + ' (' + o.status + ')', 'scope', { t:'scope', id: sc.id }); }
         else {
@@ -5226,7 +5237,7 @@ function siteDialog(id, lat, lng) {
       <div class="fld"><label>Land tenure</label><select name="landOwner">${selOpts(['Freehold','Crown','Municipal','Mixed'], s ? s.landOwner : 'Freehold')}</select></div>
       <div class="fld"><label>Latitude</label><input type="number" step="0.00001" name="lat" value="${s ? s.lat : (lat != null ? lat.toFixed(5) : '')}"></div>
       <div class="fld"><label>Longitude</label><input type="number" step="0.00001" name="lng" value="${s ? s.lng : (lng != null ? lng.toFixed(5) : '')}"></div>
-      <div class="fld"><label>Delivering division</label><select name="division">${selOpts(divisionChoices(), s ? s.division : divisionNames()[0])}</select></div>
+
       <div class="fld"><label>Target certificate date</label><input type="date" name="targetCert" value="${s ? s.targetCert : ''}"></div>
     </div>
     <div class="fld"><label>Access and site notes</label><textarea name="accessNotes" placeholder="Gate codes, approach, landowner contact, hazards">${esc(s ? s.accessNotes : '')}</textarea></div>
@@ -5242,7 +5253,7 @@ function siteDialog(id, lat, lng) {
         const o = { name: mv('name'), clientId: mv('clientId'), type: mv('type'), phase: mv('phase'),
           status: mv('status'), licence: mv('licence'), uwi: mv('uwi'), lsd: mv('lsd'),
           surfaceLoc: mv('lsd'), areaHa: num(mv('areaHa')), landUse: mv('landUse'), landOwner: mv('landOwner'),
-          lat: la, lng: ln, division: mv('division'), targetCert: mv('targetCert'),
+          lat: la, lng: ln, targetCert: mv('targetCert'),
           accessNotes: mv('accessNotes'), boundary: bd };
         if (s) { const oldPhase = s.phase; Object.assign(s, o);
           logIt(s.id, oldPhase !== o.phase ? 'Phase changed to ' + PHASE[o.phase].name : 'Site details updated', 'site', { t:'site', id: s.id });
@@ -5523,8 +5534,8 @@ function renderAdmin() {
     <div class="card"><div class="card-h">Divisions<span class="spacer"></span>
       ${canManageUsers() ? '<button class="btn sm" id="divEdit">Edit</button>' : ''}</div>
       <div class="card-b flush"><table><tbody>${divisions().map(d => `<tr><td><b>${esc(d.name)}</b></td><td class="r mono-sm">${esc(d.code || '')}</td>
-        <td class="r mono-sm">${S.sites.filter(x => x.tenantId === UI.tenant && x.division === d.name).length} sites</td></tr>`).join('')}</tbody></table></div>
-      <div class="card-b"><div class="note">Every site belongs to a division; the list on the map filters by it and people can be limited to one. ${tenantSettings() ? '' : 'These are the defaults — edit them to match this workspace.'}</div></div></div>
+        <td class="r mono-sm">${S.scopes.filter(x => x.division === d.name && S.sites.some(y => y.id === x.siteId && y.tenantId === UI.tenant)).length} scopes</td></tr>`).join('')}</tbody></table></div>
+      <div class="card-b"><div class="note">Each scope on a site belongs to a division; a site shows under every division its scopes are in. The map list filters by it and people can be limited to one. ${tenantSettings() ? '' : 'These are the defaults — edit them to match this workspace.'}</div></div></div>
 
     <div class="card"><div class="card-h">Access log<span class="spacer"></span><span class="note">${S.audit.length} events</span></div>
       <div class="card-b flush">${S.audit.length ? `<table><tbody>${S.audit.filter(a => isProvider() || a.tenantId === UI.tenant).slice(0, 25).map(a => `<tr>
@@ -5676,7 +5687,7 @@ function accessFieldsHtml(u) {
     <div class="fld"><label>Limit to specific sites</label>
       <input type="text" id="accQ" placeholder="Filter the list" autocomplete="off">
       <div id="accSites" style="max-height:170px;overflow:auto;border:1px solid var(--rule-2);border-radius:4px;padding:4px 8px;margin-top:4px">
-        ${sites.map(x => `<label class="chk" data-accrow="${esc(x.name.toLowerCase())}"><input type="checkbox" data-accsite="${x.id}"${ids.indexOf(x.id) > -1 ? ' checked' : ''}><span>${esc(x.name)}<span class="note"> · ${esc(x.division || '')}</span></span></label>`).join('') || '<div class="note">No sites yet</div>'}
+        ${sites.map(x => `<label class="chk" data-accrow="${esc(x.name.toLowerCase())}"><input type="checkbox" data-accsite="${x.id}"${ids.indexOf(x.id) > -1 ? ' checked' : ''}><span>${esc(x.name)}<span class="note"> · ${esc(siteDivisions(x).join(', '))}</span></span></label>`).join('') || '<div class="note">No sites yet</div>'}
       </div>
       <div class="hint">A person limited this way sees the ticked sites plus every site in a ticked division. Administrators always see everything.</div></div>`;
 }
