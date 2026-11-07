@@ -1250,6 +1250,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
 .rg-item{background:var(--panel);border:1px solid var(--rule-2);border-radius:4px;padding:8px 10px;margin:8px 0}
 .rg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;font-family:var(--cond)}
 .rg-n{display:inline-block;min-width:18px;text-align:center;background:var(--teal);color:#fff;border-radius:9px;font-size:11px;padding:1px 5px;margin-left:4px}
+.mk-cl{border-radius:50%;background:#2F5D3A;color:#fff;font:700 13px/1 var(--cond);text-align:center;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35);cursor:pointer}
 .sign-lines{max-height:40vh;overflow:auto;border:1px solid var(--rule-2);border-radius:4px;padding:0 8px 6px;margin-bottom:10px;background:#fff}
 .sign-lines h3{font-size:12px;margin:8px 0 4px;font-family:var(--cond);color:var(--ink-2)}
 .sign-lines .pr-tbl{font-size:11.5px}.sign-lines .pr-tbl th{width:auto;padding:4px 6px 4px 0}.sign-lines .pr-tbl td{padding:4px 6px 4px 0}
@@ -1423,7 +1424,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-07a';
+const BUILD = '2026-11-07b';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -2094,6 +2095,7 @@ function initMap() {
     return;
   }
   map = L.map('map', { zoomControl: true, attributionControl: true }).setView([53.22, -114.35], 9);
+  map.on('zoomend', () => { clearTimeout(_clusterTimer); _clusterTimer = setTimeout(renderMarkers, 60); });
   BASEMAPS.forEach(b => { baseLayers[b.id] = L.tileLayer(b.url, { attribution: b.attr, maxZoom: b.max }); });
   baseLayers[UI.basemap].addTo(map);
   layerGroup = L.layerGroup().addTo(map);
@@ -2117,11 +2119,49 @@ function initMap() {
   drawCustomLayers();
 }
 
+/* Sites closer together than about 40 px at the current zoom are drawn as
+   one dot carrying the count, so volume stays readable when zoomed out.
+   Tapping a cluster zooms into it. */
+function clusterSites(list) {
+  const z = map.getZoom();
+  const cell = 44;
+  const buckets = {};
+  list.forEach(s => {
+    const p = map.project([s.lat, s.lng], z);
+    const k = Math.floor(p.x / cell) + ':' + Math.floor(p.y / cell);
+    (buckets[k] = buckets[k] || []).push(s);
+  });
+  // neighbouring cells that still overlap are merged so counts do not sit on top of each other
+  const cl = Object.values(buckets).map(c => ({ sites: c, p: avgPoint(c, z) }));
+  for (let i = 0; i < cl.length; i++) {
+    for (let j = cl.length - 1; j > i; j--) {
+      if (cl[i].p.distanceTo(cl[j].p) < cell * 1.15) {
+        cl[i].sites = cl[i].sites.concat(cl[j].sites); cl[i].p = avgPoint(cl[i].sites, z); cl.splice(j, 1);
+      }
+    }
+  }
+  return cl.map(c => c.sites);
+}
+function avgPoint(c, z) {
+  const pts = c.map(s => map.project([s.lat, s.lng], z));
+  return L.point(pts.reduce((a, p) => a + p.x, 0) / pts.length, pts.reduce((a, p) => a + p.y, 0) / pts.length);
+}
+
 function renderMarkers() {
   if (!map || !layerGroup) return;
   layerGroup.clearLayers(); markers = {};
   const list = visibleSites().filter(s => UI.layers[layerOf(s.type)] !== false);
-  list.forEach(s => {
+  const clusters = clusterSites(list);
+  clusters.filter(c => c.length > 1).forEach(c => {
+    const lat = c.reduce((a, s) => a + s.lat, 0) / c.length, lng = c.reduce((a, s) => a + s.lng, 0) / c.length;
+    const sz = Math.min(46, 24 + c.length * 1.5);
+    const m = L.marker([lat, lng], { icon: L.divIcon({ className: '', html: `<div class="mk-cl" style="width:${sz}px;height:${sz}px;line-height:${sz}px">${c.length}</div>`, iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2] }) });
+    m.on('click', () => { try { map.fitBounds(L.latLngBounds(c.map(s => [s.lat, s.lng])).pad(0.4), { maxZoom: Math.max(map.getZoom() + 3, 12) }); } catch (e) {} });
+    m.bindTooltip(c.length + ' sites — tap to zoom in', { direction: 'top', offset: [0, -sz / 2] });
+    m.addTo(layerGroup);
+    c.forEach(s => { markers[s.id] = m; });
+  });
+  clusters.filter(c => c.length === 1).map(c => c[0]).forEach(s => {
     const r = siteRoll(s.id);
     const sz = Math.max(11, Math.min(26, 11 + Math.sqrt(r.forecast || 0) / 46));
     const sel = UI.selected === s.id;
@@ -2151,13 +2191,14 @@ function renderMarkers() {
     try { map.fitBounds(L.latLngBounds(list.map(s => [s.lat, s.lng])).pad(0.25)); } catch (e) {}
   }
 }
+let _clusterTimer = null;
 
 function flyTo(id) {
   const s = S.sites.find(x => x.id === id);
   if (!s || !map) return;
   if (window.innerWidth < 900) { UI.mobileMap = true; go('map'); }
   map.setView([s.lat, s.lng], Math.max(map.getZoom(), 13), { animate: true });
-  if (markers[id]) markers[id].openPopup();
+  setTimeout(() => { if (markers[id] && markers[id].getPopup && markers[id].getPopup()) markers[id].openPopup(); }, 350);
 }
 
 function refreshAll() {
