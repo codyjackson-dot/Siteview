@@ -5558,19 +5558,21 @@ function renderAdmin() {
         <tbody>${tUsers().map(u => `<tr class="${u.active === false ? 'acct-off' : ''}">
         <td><b>${esc(u.name)}</b>${u.id === S.me ? ' <span class="pill info">you</span>' : ''}
           <br><span class="note">${esc(u.title || '')}${u.clientId ? ' · ' + esc(clientName(u.clientId)) : ''}</span></td>
-        <td class="mono-sm">${u.username ? esc(u.username) : '<span class="pill warnp">no sign-in yet</span>'}
-          ${u.mustChange ? '<br><span class="pill warnp">temporary password</span>' : ''}
+        <td class="mono-sm">${u.username ? esc(u.username) : (Cloud.on && u.email ? esc(u.email) : '<span class="pill warnp">no sign-in yet</span>')}
+          ${u.mustChange && !Cloud.on ? '<br><span class="pill warnp">temporary password</span>' : ''}
           ${u.active === false ? '<br><span class="pill badp">deactivated</span>' : ''}</td>
         <td><span class="pill ${u.role === 'Client' ? '' : 'info'}">${esc(u.role)}</span></td>
         <td class="mono-sm">${u.lastSignIn ? fmtTs(u.lastSignIn) : '—'}</td>
         <td class="r"><div class="row-actions">
           ${canManageUsers() ? (Cloud.on ? `<button class="btn sm" data-acc="${u.id}">Access</button>` : `<button class="btn sm" data-usr="${u.id}">Edit</button>`) : ''}
-          ${canManageUsers() ? `<button class="btn sm" data-pwr="${u.id}">${u.username ? 'Reset password' : 'Give access'}</button>` : ''}
+          ${canManageUsers() && !Cloud.on ? `<button class="btn sm" data-pwr="${u.id}">${u.username ? 'Reset password' : 'Give access'}</button>` : ''}
           ${canManageUsers() && u.id !== S.me ? `<button class="btn sm ${u.active === false ? '' : 'dgr'}" data-act-t="${u.id}">${u.active === false ? 'Restore' : 'Disable'}</button>` : ''}
         </div></td></tr>`).join('')}</tbody></table></div></div>
-      <div class="card-b"><div class="note">Passwords are stored only as a salted, repeatedly hashed digest and are never included in an export.
+      <div class="card-b"><div class="note">${Cloud.on
+        ? 'Accounts are cloud sign-ins. Use <b>Invite someone</b> to add a person — they set their own password and can sign in from any device. Use <b>Access</b> to change what they can see and <b>Disable</b> to lock them out.'
+        : `Passwords are stored only as a salted, repeatedly hashed digest and are never included in an export.
         Sessions expire after ${SESSION_HOURS} hours, or ${IDLE_MINUTES} minutes idle. This gate controls who can open the app on this
-        device; it is not server-side security, so keep the device itself locked.</div></div></div>
+        device; it is not server-side security, so keep the device itself locked.`}</div></div></div>
 
     <div class="card"><div class="card-h">Divisions<span class="spacer"></span>
       ${canManageUsers() ? '<button class="btn sm" id="divEdit">Edit</button>' : ''}</div>
@@ -5658,7 +5660,7 @@ function renderAdmin() {
   $$('#paneAdmin [data-cli]').forEach(b => b.onclick = () => clientDialog(b.dataset.cli));
   $$('#paneAdmin [data-usr]').forEach(b => b.onclick = () => userDialog(b.dataset.usr));
   $$('#paneAdmin [data-acc]').forEach(b => b.onclick = () => accessDialog(b.dataset.acc));
-  $$('#paneAdmin [data-pwr]').forEach(b => b.onclick = () => resetPasswordDialog(b.dataset.pwr));
+  $$('#paneAdmin [data-pwr]').forEach(b => b.onclick = () => Cloud.on ? toast('Cloud accounts use invitations — tap Invite someone', true) : resetPasswordDialog(b.dataset.pwr));
   $$('#paneAdmin [data-act-t]').forEach(b => b.onclick = () => toggleActive(b.dataset.actT));
   if ($('#upWs')) $('#upWs').onclick = () => uploadWorkspace();
   $('#expJson').onclick = exportJson;
@@ -6383,7 +6385,10 @@ function inviteDialog(tenantId) {
   openModal('Invite someone to ' + (t ? t.name : 'the workspace'), `
     <p class="note">This creates a one-time invitation code. Send it with the sign-up link — they choose
     their own password and the account is theirs, on any device.</p>
-    <div class="fld"><label>Their name <span class="req">*</span></label><input type="text" name="nm"></div>
+    <div class="grid2">
+      <div class="fld"><label>Their name <span class="req">*</span></label><input type="text" name="nm"></div>
+      <div class="fld"><label>Their email</label><input type="email" name="em" autocapitalize="none" spellcheck="false" placeholder="name@company.ca"></div>
+    </div>
     <div class="grid2">
       <div class="fld"><label>Role</label><select name="role">${selOpts(roles, 'Project manager')}</select></div>
       <div class="fld"><label>Title</label><input type="text" name="title" placeholder="Field supervisor"></div>
@@ -6400,7 +6405,7 @@ function inviteDialog(tenantId) {
         if (!mv('nm')) return toast('Enter their name', true);
         const acc = readAccessFields();
         const rec = { tid: (t ? t.id : null), role: mv('role'), name: mv('nm'), divisions: acc.divisions, sites: acc.sites,
-                      title: mv('title'), unit: mv('unit') || null, expires: mv('exp'),
+                      title: mv('title'), unit: mv('unit') || null, expires: mv('exp'), email: (mv('em') || '').trim().toLowerCase() || null,
                       by: me().name, at: Date.now() };
         if (mv('role') === 'Provider admin') rec.tid = null;
         try {
@@ -6411,11 +6416,17 @@ function inviteDialog(tenantId) {
           <div class="fld"><label>Send them this</label>
             <textarea id="invText" readonly style="min-height:110px;font-size:12.5px">${
               esc(window.location.origin + window.location.pathname)}\n\nInvitation code: ${code}\n\nOpen the link, choose "I have an invitation", and set your own password. The code expires ${fmtDate(mv('exp'))}.</textarea></div>
-          <button class="btn" id="invCopy">Copy</button>`;
+          <button class="btn" id="invCopy">Copy</button>
+          ${rec.email ? `<a class="btn pri" id="invMail" href="#">Email invitation to ${esc(rec.email)}</a>` : ''}`;
         $('#invCopy').onclick = () => {
           const el = $('#invText'); el.select(); el.setSelectionRange(0, 99999);
           try { document.execCommand('copy'); toast('Copied'); } catch (e) { toast('Select and copy manually', true); }
         };
+        if ($('#invMail')) {
+          const subj = 'SiteView access';
+          const body = 'Hi ' + rec.name.split(' ')[0] + ',\n\n' + $('#invText').value + '\n\n' + me().name;
+          $('#invMail').href = 'mailto:' + encodeURIComponent(rec.email) + '?subject=' + encodeURIComponent(subj) + '&body=' + encodeURIComponent(body);
+        }
      }}]);
   wireAccessFields();
 }
