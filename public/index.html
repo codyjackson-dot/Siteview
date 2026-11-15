@@ -2645,7 +2645,10 @@ function pipeStyle(p, base) {
 
 /* Canvas drawing for a well symbol. Leaflet's canvas renderer gets one extra
    method; WellMarker is a circle marker that asks for it instead of a circle. */
-L.Canvas.include({
+let WellMarker = null;
+function wellMarkerClass() {
+  if (WellMarker) return WellMarker;
+  L.Canvas.include({
   _updateWell(layer) {
     if (!this._drawing || layer._empty()) return;
     const ctx = this._ctx, p = layer._point, r = Math.max(2, layer._radius), o = layer.options;
@@ -2678,7 +2681,9 @@ L.Canvas.include({
     ctx.restore();
   }
 });
-const WellMarker = L.CircleMarker.extend({ _updatePath() { this._renderer._updateWell(this); } });
+  WellMarker = L.CircleMarker.extend({ _updatePath() { this._renderer._updateWell(this); } });
+  return WellMarker;
+}
 /* an inline SVG of the same symbol, for the legend */
 function wellSymbolSvg(sym, c) {
   const t = '<path d="M9.5 9.5l3 3M4.5 9.5l-3 3M9.5 4.5l3-3M4.5 4.5l-3-3" stroke="' + c + '" stroke-width="1.6"/>';
@@ -2732,7 +2737,7 @@ async function drawCustomLayers() {
       style: f => rec.style === 'wells' ? {} : rec.style === 'pipelines' ? pipeStyle(f.properties || {}, rec.colour)
                 : { color: rec.colour, weight: rec.kind === 'line' ? 2.2 : 2, opacity: 0.9, fillOpacity: 0.12 },
       pointToLayer: (f, ll) => rec.style === 'wells'
-        ? new WellMarker(ll, { renderer: layerRenderer, radius: z >= 13 ? 6 : z >= 11 ? 5 : 3.5,
+        ? new (wellMarkerClass())(ll, { renderer: layerRenderer, radius: z >= 13 ? 6 : z >= 11 ? 5 : 3.5,
             color: FLUID_COLOURS[wellFluid(f.properties || {})], sym: wellSymbol(f.properties || {}) })
         : L.circleMarker(ll, { renderer: layerRenderer, radius: z >= 12 ? 4 : 3, color: rec.colour, weight: 1.2, fillColor: rec.colour, fillOpacity: 0.75 }),
       onEachFeature: (f, l) => {
