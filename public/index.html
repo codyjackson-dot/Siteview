@@ -1428,7 +1428,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-15a';
+const BUILD = '2026-11-15b';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -2715,7 +2715,7 @@ function importLayerDialog(existingId) {
     </select></div>`}
     <div class="fld"><label>File <span class="req">*</span></label>
       <input type="file" id="gjFile" accept=".zip,.geojson,.json,application/zip,application/geo+json,application/json">
-      <div class="hint">Shapefile .zip up to 150 MB, GeoJSON up to 20 MB. Reading a province-wide file takes a few seconds.</div></div>
+      <div class="hint">Province-wide AER zips (hundreds of MB) are fine on a laptop — only the clipped result is stored. Reading one takes up to a minute; on a phone, import on a computer first.</div></div>
     ${clipChoicesHtml()}
     <div id="lyrStat" class="note"></div>`,
     [{ label:'Cancel', cls:'btn', fn: closeModal },
@@ -2724,7 +2724,8 @@ function importLayerDialog(existingId) {
         const f = $('#gjFile').files[0];
         if (!nm) return toast('Give the layer a name', true);
         if (!f) return toast('Choose a file', true);
-        if (f.size > 150 * 1024 * 1024) return toast('That file is over 150 MB', true);
+        if (f.size > 1024 * 1024 * 1024) return toast('That file is over 1 GB — export a smaller area from your GIS', true);
+        if (f.size > 200 * 1024 * 1024) toast('Large file — reading may take a minute on a phone');
         const stat = $('#lyrStat'); stat.textContent = 'Reading ' + f.name + '…';
         let gj, clipped;
         try {
