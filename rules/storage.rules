@@ -35,9 +35,12 @@ service firebase.storage {
 
       // Document control is administrators only. Form attachments follow the
       // form instead, so field staff can complete their own paperwork.
+      // Map layers (AER wells, pipelines) are larger than ordinary attachments.
+      function mapLayer() { return id.matches('layer_.*'); }
+
       allow write: if inTenant()
                    && (adminRole() || (editRole() && formAttachment()))
-                   && request.resource.size < 25 * 1024 * 1024;
+                   && request.resource.size < (mapLayer() ? 60 : 25) * 1024 * 1024;
 
       allow delete: if inTenant() && (adminRole() || (editRole() && formAttachment()));
     }
