@@ -1428,7 +1428,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-15b';
+const BUILD = '2026-11-15c';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -2605,14 +2605,22 @@ async function drawCustomLayers() {
     if (UI.layers['ov_' + rec.id] === false) continue;
     let gj = layerData[rec.id];
     if (!gj) {
-      const raw = await Files.get('layer_' + rec.id);
+      const raw = await getLayerText(rec);
       if (!raw) continue;
       try { gj = JSON.parse(raw); } catch (e) { continue; }
       layerData[rec.id] = gj;
     }
     const big = (gj.features || []).length > BIG_LAYER;
     if (big && z < 9) continue;                     // a province of wells is noise at that scale
-    const data = big ? { type: 'FeatureCollection', features: gj.features.filter(f => featureInBounds(f, bounds)) } : gj;
+    let data = gj;
+    if (big) {
+      const inView = gj.features.filter(f => featureInBounds(f, bounds));
+      if (inView.length > VIEW_MAX) {                // too dense to draw; zoom in further
+        if (!rec._dense) { rec._dense = true; toast(rec.name + ': ' + inView.length.toLocaleString() + ' features here — zoom in to see them'); }
+        continue;
+      }
+      data = { type: 'FeatureCollection', features: inView };
+    }
     const g = L.geoJSON(data, {
       renderer: layerRenderer,
       style: { color: rec.colour, weight: rec.kind === 'line' ? 2.2 : 2, opacity: 0.9, fillOpacity: 0.12 },
@@ -2672,7 +2680,29 @@ function slimFeatures(feats, maxKeys) {
     return { type: 'Feature', geometry: { type: f.geometry.type, coordinates: round(f.geometry.coordinates) }, properties: q };
   });
 }
-const LAYER_MAX = 40000;
+const LAYER_MAX = 750000;            // a whole province of wells
+const LAYER_PART = 14 * 1024 * 1024;  // stored in parts this size
+const VIEW_MAX = 30000;               // most features drawn at once
+/* Layers are stored in parts: layer_<id>, layer_<id>_p1, layer_<id>_p2 … */
+async function putLayerParts(id, text, oldParts) {
+  const parts = [];
+  for (let i = 0; i < text.length; i += LAYER_PART) parts.push(text.slice(i, i + LAYER_PART));
+  for (let i = 0; i < parts.length; i++) await Files.put('layer_' + id + (i ? '_p' + i : ''), parts[i]);
+  for (let i = parts.length; i < (oldParts || 1); i++) await Files.del('layer_' + id + '_p' + i);
+  return parts.length;
+}
+async function getLayerText(rec) {
+  let out = '';
+  for (let i = 0; i < (rec.parts || 1); i++) {
+    const t = await Files.get('layer_' + rec.id + (i ? '_p' + i : ''));
+    if (!t) return null;
+    out += t;
+  }
+  return out;
+}
+async function delLayerParts(rec) {
+  for (let i = 0; i < (rec.parts || 1); i++) await Files.del('layer_' + rec.id + (i ? '_p' + i : ''));
+}
 
 function clipChoicesHtml() {
   return `<div class="fld"><label>Keep</label>
@@ -2697,7 +2727,7 @@ function clipLayer(gj) {
   if (!feats.length) throw new Error('Nothing in the file falls inside that area');
   const t = feats[0].geometry.type;
   const kind = /Line/.test(t) ? 'line' : /Polygon/.test(t) ? 'polygon' : 'point';
-  return { fc: { type: 'FeatureCollection', features: slimFeatures(feats, 14) }, kind };
+  return { fc: { type: 'FeatureCollection', features: slimFeatures(feats, feats.length > 100000 ? 8 : 14) }, kind };
 }
 
 function importLayerDialog(existingId) {
@@ -2735,19 +2765,20 @@ function importLayerDialog(existingId) {
           clipped = clipLayer(gj);
         } catch (e) { stat.textContent = ''; return toast(e.message || 'Could not read that file', true); }
         const text = JSON.stringify(clipped.fc);
-        if (text.length > 18 * 1024 * 1024) return toast('The clipped layer is still ' + bytes(text.length) + ' — keep a smaller area', true);
+              if (text.length > 12 * LAYER_PART) return toast('The clipped layer is ' + bytes(text.length) + ' — keep a smaller area', true);
         const n = clipped.fc.features.length;
         const id = ex ? ex.id : uid('ly');
         stat.textContent = 'Storing ' + n.toLocaleString() + ' features (' + bytes(text.length) + ')…';
-        try { await Files.put('layer_' + id, text); }
+        let parts;
+        try { parts = await putLayerParts(id, text, ex ? ex.parts : 0); }
         catch (e) { stat.textContent = ''; return toast('Could not store the layer: ' + ((e && e.message) || 'refused'), true); }
         delete layerData[id];
         // re-find: a server refresh may have replaced the record object while the file was being read
         const cur = ex ? S.layers.find(l => l.id === id) : null;
         if (ex && !cur) return toast('That layer was removed while the file was being read', true);
-        if (ex) { Object.assign(cur, { count: n, size: text.length, at: Date.now(), by: me().name, kind: clipped.kind, source: f.name }); }
+        if (ex) { Object.assign(cur, { parts, count: n, size: text.length, at: Date.now(), by: me().name, kind: clipped.kind, source: f.name }); }
         else {
-          S.layers.push({ id, tenantId: UI.tenant, name: nm, colour: mv('col'), kind: clipped.kind,
+          S.layers.push({ id, tenantId: UI.tenant, name: nm, colour: mv('col'), kind: clipped.kind, parts,
                           count: n, size: text.length, at: Date.now(), by: me().name, source: f.name });
           UI.layers['ov_' + id] = true;
         }
@@ -2761,7 +2792,7 @@ async function deleteLayer(id) {
   if (!canManageFiles()) return toast('Only an administrator can remove map layers', true);
   const rec = S.layers.find(l => l.id === id); if (!rec) return;
   if (!confirm('Remove the layer "' + rec.name + '"?')) return;
-  await Files.del('layer_' + id);
+  await delLayerParts(rec);
   S.layers = S.layers.filter(l => l.id !== id);
   delete layerData[id];
   if (customLayers[id]) { map.removeLayer(customLayers[id]); delete customLayers[id]; }
@@ -6855,7 +6886,7 @@ async function deleteTenant(id) {
     + S.users.filter(u => u.tenantId === id).length + ' accounts? This cannot be undone.')) return;
   if (!confirm('Last check. Export the workspace first if there is any chance it is needed. Continue?')) return;
   for (const d of docs) await Files.del(d.id);
-  S.layers.filter(l => l.tenantId === id).forEach(l => Files.del('layer_' + l.id));
+  S.layers.filter(l => l.tenantId === id).forEach(l => delLayerParts(l));
   ['sites','clients','users','templates','audit','layers','tasks','lems','invoices','rates'].forEach(k => { S[k] = S[k].filter(x => x.tenantId !== id); });
   ['scopes','afes','costs','forms','docs','folders','log'].forEach(k => { S[k] = S[k].filter(x => ids.indexOf(x.siteId) === -1); });
   S.tenants = S.tenants.filter(x => x.id !== id);
