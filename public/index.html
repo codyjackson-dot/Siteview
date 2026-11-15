@@ -1428,7 +1428,7 @@ hr.rule{border:none;border-top:1px solid var(--rule-2);margin:14px 0}
    ========================================================================== */
 'use strict';
 
-const BUILD = '2026-11-15c';
+const BUILD = '2026-11-15d';
 const KEY = 'des.siteview.v1';
 const LEGACY_KEY = 'des.sitefile.v1';          // pre-rename store, read once on first launch
 const IDB_NAME = 'des-sitefile-files';         // unchanged on purpose: renaming would orphan attachments
@@ -2584,6 +2584,112 @@ let customLayers = {};
 
 const layerData = {};          // parsed GeoJSON per imported layer
 const BIG_LAYER = 2500;        // above this many features, draw only what is in view
+
+/* ---- Industry well & pipeline symbols (the convention Petro Ninja, AbaData
+   and GeoSCOUT use): colour says the fluid, the shape says the status. ---- */
+const FLUID_COLOURS = { oil:'#1f9d3a', gas:'#d7263d', water:'#2a6fd6', bitumen:'#6b3f1d', co2:'#8a5fbf', other:'#6b7280' };
+const WELL_SYMBOLS = [
+  { id:'producing',  name:'Producing / flowing' },
+  { id:'suspended',  name:'Suspended' },
+  { id:'abandoned',  name:'Abandoned' },
+  { id:'dry',        name:'Dry & abandoned' },
+  { id:'injection',  name:'Injection / disposal' },
+  { id:'drilling',   name:'Drilling / cased' },
+  { id:'location',   name:'Location (not drilled)' }
+];
+const findKey = (p, re) => Object.keys(p).find(k => re.test(k));
+/* AER ST37 columns vary by vintage (FLUID / WELL_FLUID / FLUID_TYPE, MODE /
+   WELL_MODE / STATUS …) so look for the idea, not the exact name. */
+function wellFluid(p) {
+  const k = findKey(p, /fluid|substance|product/i) || findKey(p, /^type$|well_?type/i);
+  const v = String(k ? p[k] : '').toLowerCase();
+  if (/bitumen|oil ?sand/.test(v)) return 'bitumen';
+  if (/crude|oil/.test(v)) return 'oil';
+  if (/co2|acid|solvent|air|steam|carbon/.test(v)) return 'co2';
+  if (/gas|methane|cbm|coal/.test(v)) return 'gas';
+  if (/water|brine/.test(v)) return 'water';
+  return 'other';
+}
+function wellSymbol(p) {
+  const keys = Object.keys(p).filter(k => /mode|status|state|class|type/i.test(k));
+  const v = keys.map(k => String(p[k])).join(' ').toLowerCase();
+  if (/dry/.test(v) && /aband/.test(v)) return 'dry';
+  if (/aband|rec ?cert|reclaim|plugged/.test(v)) return 'abandoned';
+  if (/suspend|shut.?in|standing/.test(v)) return 'suspended';
+  if (/inject|dispos|storage|cycl/.test(v)) return 'injection';
+  if (/drill|cased|complet|testing/.test(v) && !/flow|pump|produc/.test(v)) return 'drilling';
+  if (/licen|location|issued|cancel/.test(v) && !/flow|pump|produc|aband/.test(v)) return 'location';
+  if (/flow|pump|produc|active|gas lift/.test(v)) return 'producing';
+  return 'producing';
+}
+/* Does this layer look like a well list? */
+const looksLikeWells = fc => {
+  const f = fc.features[0]; if (!f || f.geometry.type !== 'Point') return false;
+  const p = f.properties || {};
+  return !!(findKey(p, /uwi|licen/i) && (findKey(p, /fluid|mode|status/i)));
+};
+const looksLikePipelines = fc => {
+  const f = fc.features[0]; if (!f || !/Line/.test(f.geometry.type)) return false;
+  return !!findKey(f.properties || {}, /substance|product|licen/i);
+};
+function pipeStyle(p, base) {
+  const fl = wellFluid(p);
+  const k = findKey(p, /status|state|mode/i); const st = String(k ? p[k] : '').toLowerCase();
+  const sub = String(p[findKey(p, /substance|product/i)] || '').toLowerCase();
+  let color = FLUID_COLOURS[fl] || base;
+  if (/hvp|lvp|condens|ngl|lpg|propane|butane/.test(sub)) color = '#e07b00';
+  if (/sour|h2s/.test(sub)) color = '#8a5fbf';
+  const dead = /aband|discont|removed|cancel/.test(st);
+  return { color: dead ? '#9aa0a6' : color, weight: dead ? 1.4 : 2.2, opacity: 0.9, dashArray: dead ? '4 4' : null };
+}
+
+/* Canvas drawing for a well symbol. Leaflet's canvas renderer gets one extra
+   method; WellMarker is a circle marker that asks for it instead of a circle. */
+L.Canvas.include({
+  _updateWell(layer) {
+    if (!this._drawing || layer._empty()) return;
+    const ctx = this._ctx, p = layer._point, r = Math.max(2, layer._radius), o = layer.options;
+    const c = o.color, sym = o.sym;
+    ctx.save();
+    ctx.lineWidth = Math.max(1, r / 3.2); ctx.strokeStyle = c; ctx.fillStyle = c;
+    const circle = () => { ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2, false); };
+    const ticks = () => {              // four short bars radiating diagonally
+      ctx.beginPath();
+      [[1,1],[-1,1],[1,-1],[-1,-1]].forEach(([dx,dy]) => {
+        const s = 0.7071; ctx.moveTo(p.x + dx * r * s, p.y + dy * r * s); ctx.lineTo(p.x + dx * r * s * 2, p.y + dy * r * s * 2); });
+      ctx.stroke();
+    };
+    switch (sym) {
+      case 'producing': circle(); ctx.globalAlpha = 0.95; ctx.fill(); break;
+      case 'suspended':                 // left half filled
+        circle(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, Math.PI / 2, Math.PI * 1.5, false); ctx.closePath(); ctx.fill(); break;
+      case 'abandoned': circle(); ctx.fill(); ticks(); break;
+      case 'dry': ctx.fillStyle = '#fff'; circle(); ctx.fill(); ctx.stroke(); ticks(); break;
+      case 'injection':                 // open circle with a down-pointing arrow
+        ctx.fillStyle = '#fff'; circle(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(p.x - r * 0.6, p.y - r * 0.45); ctx.lineTo(p.x + r * 0.6, p.y - r * 0.45); ctx.lineTo(p.x, p.y + r * 0.65); ctx.closePath(); ctx.fill(); break;
+      case 'drilling':                  // open circle with a centre dot
+        ctx.fillStyle = '#fff'; circle(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = c; ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.35, 0, Math.PI * 2); ctx.fill(); break;
+      default:                          // location: open circle
+        ctx.fillStyle = '#fff'; circle(); ctx.fill(); ctx.stroke();
+    }
+    ctx.restore();
+  }
+});
+const WellMarker = L.CircleMarker.extend({ _updatePath() { this._renderer._updateWell(this); } });
+/* an inline SVG of the same symbol, for the legend */
+function wellSymbolSvg(sym, c) {
+  const t = '<path d="M9.5 9.5l3 3M4.5 9.5l-3 3M9.5 4.5l3-3M4.5 4.5l-3-3" stroke="' + c + '" stroke-width="1.6"/>';
+  const o = '<circle cx="7" cy="7" r="4.2" fill="#fff" stroke="' + c + '" stroke-width="1.6"/>';
+  const f = '<circle cx="7" cy="7" r="4.2" fill="' + c + '"/>';
+  const body = { producing: f, abandoned: f + t, dry: o + t,
+    suspended: o + '<path d="M7 2.8a4.2 4.2 0 0 0 0 8.4z" fill="' + c + '"/>',
+    injection: o + '<path d="M4.4 5.2h5.2L7 9.6z" fill="' + c + '"/>',
+    drilling: o + '<circle cx="7" cy="7" r="1.5" fill="' + c + '"/>', location: o }[sym] || o;
+  return '<svg width="14" height="14" viewBox="0 0 14 14" style="vertical-align:-3px">' + body + '</svg>';
+}
 let layerRenderer = null;
 let _lyrMoveTimer = null;
 
@@ -2623,9 +2729,12 @@ async function drawCustomLayers() {
     }
     const g = L.geoJSON(data, {
       renderer: layerRenderer,
-      style: { color: rec.colour, weight: rec.kind === 'line' ? 2.2 : 2, opacity: 0.9, fillOpacity: 0.12 },
-      pointToLayer: (f, ll) => L.circleMarker(ll, {
-        renderer: layerRenderer, radius: z >= 12 ? 4 : 3, color: rec.colour, weight: 1.2, fillColor: rec.colour, fillOpacity: 0.75 }),
+      style: f => rec.style === 'wells' ? {} : rec.style === 'pipelines' ? pipeStyle(f.properties || {}, rec.colour)
+                : { color: rec.colour, weight: rec.kind === 'line' ? 2.2 : 2, opacity: 0.9, fillOpacity: 0.12 },
+      pointToLayer: (f, ll) => rec.style === 'wells'
+        ? new WellMarker(ll, { renderer: layerRenderer, radius: z >= 13 ? 6 : z >= 11 ? 5 : 3.5,
+            color: FLUID_COLOURS[wellFluid(f.properties || {})], sym: wellSymbol(f.properties || {}) })
+        : L.circleMarker(ll, { renderer: layerRenderer, radius: z >= 12 ? 4 : 3, color: rec.colour, weight: 1.2, fillColor: rec.colour, fillOpacity: 0.75 }),
       onEachFeature: (f, l) => {
         const p = f.properties || {};
         const keys = Object.keys(p).slice(0, 8);
@@ -2676,7 +2785,8 @@ function slimFeatures(feats, maxKeys) {
   const round = c => Array.isArray(c[0]) ? c.map(round) : [Math.round(c[0] * 1e5) / 1e5, Math.round(c[1] * 1e5) / 1e5];
   return feats.map(f => {
     const p = f.properties || {}, q = {};
-    Object.keys(p).slice(0, maxKeys).forEach(k => { const v = p[k]; if (v !== null && v !== '' && v !== undefined) q[k] = v; });
+    const ks = Object.keys(p).sort((a, b) => (/uwi|licen|fluid|mode|status|substance|product|name|type/i.test(b) ? 1 : 0) - (/uwi|licen|fluid|mode|status|substance|product|name|type/i.test(a) ? 1 : 0));
+    ks.slice(0, maxKeys).forEach(k => { const v = p[k]; if (v !== null && v !== '' && v !== undefined) q[k] = v; });
     return { type: 'Feature', geometry: { type: f.geometry.type, coordinates: round(f.geometry.coordinates) }, properties: q };
   });
 }
@@ -2727,7 +2837,9 @@ function clipLayer(gj) {
   if (!feats.length) throw new Error('Nothing in the file falls inside that area');
   const t = feats[0].geometry.type;
   const kind = /Line/.test(t) ? 'line' : /Polygon/.test(t) ? 'polygon' : 'point';
-  return { fc: { type: 'FeatureCollection', features: slimFeatures(feats, feats.length > 100000 ? 8 : 14) }, kind };
+  const fc = { type: 'FeatureCollection', features: slimFeatures(feats, feats.length > 100000 ? 8 : 14) };
+  const style = looksLikeWells(fc) ? 'wells' : looksLikePipelines(fc) ? 'pipelines' : 'plain';
+  return { fc, kind, style };
 }
 
 function importLayerDialog(existingId) {
@@ -2776,9 +2888,9 @@ function importLayerDialog(existingId) {
         // re-find: a server refresh may have replaced the record object while the file was being read
         const cur = ex ? S.layers.find(l => l.id === id) : null;
         if (ex && !cur) return toast('That layer was removed while the file was being read', true);
-        if (ex) { Object.assign(cur, { parts, count: n, size: text.length, at: Date.now(), by: me().name, kind: clipped.kind, source: f.name }); }
+        if (ex) { Object.assign(cur, { parts, style: clipped.style, count: n, size: text.length, at: Date.now(), by: me().name, kind: clipped.kind, source: f.name }); }
         else {
-          S.layers.push({ id, tenantId: UI.tenant, name: nm, colour: mv('col'), kind: clipped.kind, parts,
+          S.layers.push({ id, tenantId: UI.tenant, name: nm, colour: mv('col'), kind: clipped.kind, style: clipped.style, parts,
                           count: n, size: text.length, at: Date.now(), by: me().name, source: f.name });
           UI.layers['ov_' + id] = true;
         }
@@ -2827,11 +2939,17 @@ function renderLayersPanel() {
     <div class="lp-sec">Imported layers</div>
     ${S.layers.filter(l => l.tenantId === UI.tenant).map(l => `<label class="lp-row">
       <input type="checkbox" data-lyr="ov_${l.id}" ${UI.layers['ov_' + l.id] !== false ? 'checked' : ''}>
-      <span><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${l.colour};margin-right:5px"></i>${esc(l.name)}</span>
+      <span>${l.style === 'wells' ? wellSymbolSvg('producing', '#1f9d3a') + ' ' : `<i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${l.colour};margin-right:5px"></i>`}${esc(l.name)}</span>
       <i title="${l.at ? 'Updated ' + new Date(l.at).toLocaleDateString() : ''}">${Number(l.count).toLocaleString()}${l.count > BIG_LAYER ? ' · zoom in' : ''}</i>
       ${canManageFiles() ? `<button class="lp-x" data-upl="${l.id}" title="Replace the data with a newer file">&#8635;</button><button class="lp-x" data-rml="${l.id}" title="Remove">&times;</button>` : ''}
     </label>`).join('') || '<div class="lp-none">None yet</div>'}
-    ${canManageFiles() ? '<button class="btn sm" id="lyrAdd" style="margin:8px 8px 4px">Import shapefile or GeoJSON…</button>' : ''}`;
+    ${canManageFiles() ? '<button class="btn sm" id="lyrAdd" style="margin:8px 8px 4px">Import shapefile or GeoJSON…</button>' : ''}
+    ${S.layers.some(l => l.tenantId === UI.tenant && l.style === 'wells') ? `<div class="lp-sec">Well symbols</div>
+      <div class="lp-none" style="line-height:1.9">${WELL_SYMBOLS.map(w => wellSymbolSvg(w.id, '#333') + ' ' + w.name).join('<br>')}<br>
+      ${Object.keys(FLUID_COLOURS).map(k => '<i style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + FLUID_COLOURS[k] + ';margin-right:4px"></i>' + k[0].toUpperCase() + k.slice(1)).join(' &nbsp;')}</div>` : ''}
+    ${S.layers.some(l => l.tenantId === UI.tenant && l.style === 'pipelines') ? `<div class="lp-sec">Pipelines</div>
+      <div class="lp-none" style="line-height:1.9">${[['#1f9d3a','Oil'],['#d7263d','Gas'],['#e07b00','HVP / LVP / NGL'],['#8a5fbf','Sour'],['#2a6fd6','Water'],['#6b7280','Other']].map(([c,t]) => '<i style="display:inline-block;width:16px;height:3px;background:' + c + ';margin-right:5px;vertical-align:middle"></i>' + t).join(' &nbsp;')}
+      <br><i style="display:inline-block;width:16px;border-top:2px dashed #9aa0a6;margin-right:5px;vertical-align:middle"></i>Abandoned / discontinued</div>` : ''}`;
 
   $$('#layersPanel [data-bm]').forEach(b => b.onclick = () => {
     map.removeLayer(baseLayers[UI.basemap]);
